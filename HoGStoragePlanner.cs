@@ -866,43 +866,32 @@ namespace ReplayLogger
             bool monsters = snapshot.StrengthenAllMonsters;
             bool originalHp = snapshot.OriginalHp;
 
-            if (main && boss && monsters)
+            if (!hp.HasValue)
+            {
+                return HoGStoragePlan.WaitForHp(CreateBucket("HoG", MantisSistersFolder, "HoG"), MantisSistersScene);
+            }
+
+            bool fullAhe = snapshot.Available && main && boss && monsters;
+
+            const int threshold = 500;
+
+            if (fullAhe)
             {
                 if (!originalHp)
                 {
-                    if (!hp.HasValue)
-                    {
-                        return HoGStoragePlan.WaitForHp(CreateBucket("HoG AHE+", MantisSistersFolder, "HoG AHE+"), MantisSistersScene);
-                    }
-
-                    return hp.Value > 750
+                    return hp.Value > threshold
                         ? HoGStoragePlan.Final(CreateBucket("HoG AHE+", MantisSistersFolder, "HoG AHE+"), hp, MantisSistersScene)
                         : HoGStoragePlan.Final(CreateBucket("Other", MantisSistersFolder, "Other"), hp, MantisSistersScene);
                 }
 
-                if (!hp.HasValue)
-                {
-                    return HoGStoragePlan.WaitForHp(CreateBucket("HoG AHE", MantisSistersFolder, "HoG AHE"), MantisSistersScene);
-                }
-
-                return hp.Value > 750
+                return hp.Value > threshold
                     ? HoGStoragePlan.Final(CreateBucket("HoG AHE", MantisSistersFolder, "HoG AHE"), hp, MantisSistersScene)
                     : HoGStoragePlan.Final(CreateBucket("Other", MantisSistersFolder, "Other"), hp, MantisSistersScene);
             }
 
-            if (!main)
-            {
-                if (!hp.HasValue)
-                {
-                    return HoGStoragePlan.WaitForHp(CreateBucket("HoG", MantisSistersFolder, "HoG"), MantisSistersScene);
-                }
-
-                return hp.Value > 750
-                    ? HoGStoragePlan.Final(CreateBucket("HoG", MantisSistersFolder, "HoG"), hp, MantisSistersScene)
-                    : HoGStoragePlan.Final(CreateBucket("Other", MantisSistersFolder, "Other"), hp, MantisSistersScene);
-            }
-
-            return HoGStoragePlan.Final(CreateBucket("Other", MantisSistersFolder, "Other"), hp, MantisSistersScene);
+            return hp.Value > threshold
+                ? HoGStoragePlan.Final(CreateBucket("HoG", MantisSistersFolder, "HoG"), hp, MantisSistersScene)
+                : HoGStoragePlan.Final(CreateBucket("Other", MantisSistersFolder, "Other"), hp, MantisSistersScene);
         }
 
         private static HoGStoragePlan BuildOblobblesPlan(AllHallownestEnhancedToggleSnapshot snapshot, int? hp)

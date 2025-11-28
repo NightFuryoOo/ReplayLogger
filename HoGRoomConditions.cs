@@ -66,6 +66,16 @@ namespace ReplayLogger
 
             if (hp > 0)
             {
+                if (string.Equals(scene.name, "GG_Flukemarm", StringComparison.Ordinal) && hp < 500)
+                {
+                    return;
+                }
+
+                if (string.Equals(scene.name, "GG_Mantis_Lords_V", StringComparison.Ordinal) && hp < 750)
+                {
+                    return;
+                }
+
                 pendingSceneName = null;
                 BossHpDetected?.Invoke(sceneName, hp);
             }

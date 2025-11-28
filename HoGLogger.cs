@@ -463,13 +463,14 @@ namespace ReplayLogger
             writer.Dispose();
 
             MoveTempFileToFinalLocation();
+            customCanvas?.ClearHud();
         }
 
         private static void CleanupState()
         {
             string arenaToReset = activeArena;
             writer = null;
-            customCanvas?.DestroyCanvas();
+            customCanvas?.DestroyCanvasDelayed(2.0f);
             customCanvas = null;
             masterKeyBlob = null;
             speedWarnTracker = new SpeedWarnTracker();
@@ -538,6 +539,8 @@ namespace ReplayLogger
                 if (File.Exists(currentTempFile))
                 {
                     File.Move(currentTempFile, finalPath);
+                    string toastText = $"{currentBucketInfo.BucketLabel ?? HoGLoggerConditions.DefaultBucket}: {Path.GetFileName(finalPath)}";
+                    customCanvas?.ShowSavedFileToast(toastText, 2.0f);
                 }
             }
             catch (Exception e)
@@ -1036,12 +1039,4 @@ namespace System.Runtime.CompilerServices
     internal sealed class ModuleInitializerAttribute : Attribute { }
 }
 #endif
-
-
-
-
-
-
-
-
 

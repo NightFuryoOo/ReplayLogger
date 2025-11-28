@@ -22,6 +22,7 @@ namespace ReplayLogger
 
         public TextMeshProUGUI prefabNumberInCanvas;
         public TextMeshProUGUI timeInCanvas;
+        public TextMeshProUGUI savedFileToast;
         public Image flagSpriteInCanvas;
 
         public static Sprite flagSpriteTrue;
@@ -62,6 +63,9 @@ namespace ReplayLogger
 
             flagSpriteInCanvas = CreateSprite(_canvas, flagSpriteTrue, new Vector2(850f, -500f), new Vector2(70, 70));
 
+            savedFileToast = CreateWatermarkTopRight(_canvas, new Vector2(-10f, -10f), new Vector2(520f, 50f));
+            savedFileToast.gameObject.SetActive(false);
+
 
             _canvas.SetActive(true);
             flagSpriteInCanvas.gameObject.SetActive(false);
@@ -80,6 +84,20 @@ namespace ReplayLogger
 
             if (flagSpriteInCanvas != null) Object.Destroy(flagSpriteInCanvas);
             flagSpriteInCanvas = null;
+
+            if (savedFileToast != null) Object.Destroy(savedFileToast);
+            savedFileToast = null;
+        }
+
+        public void DestroyCanvasDelayed(float seconds)
+        {
+            if (_canvas == null)
+            {
+                DestroyCanvas();
+                return;
+            }
+
+            _canvas.GetComponent<MonoBehaviour>()?.StartCoroutine(DestroyAfterDelay(seconds));
         }
 
         private Image CreateSprite(GameObject canvas, Sprite sprite, Vector2 pos, Vector2 size)
@@ -127,6 +145,31 @@ namespace ReplayLogger
             watermarkObject.SetActive(true);
 
             return textMeshProComponent;
+        }
+
+        private TextMeshProUGUI CreateWatermarkTopRight(GameObject canvas, Vector2 offset, Vector2 size)
+        {
+            GameObject toastObject = new GameObject("SavedFileToast");
+            toastObject.transform.SetParent(canvas.transform, false);
+
+            TextMeshProUGUI text = toastObject.AddComponent<TextMeshProUGUI>();
+            text.enableAutoSizing = true;
+            text.fontSizeMin = 10f;
+            text.fontSizeMax = 20f;
+            text.color = Color.green;
+            text.alignment = TextAlignmentOptions.TopRight;
+            text.enableWordWrapping = false;
+
+            RectTransform rect = toastObject.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(1f, 1f);
+            rect.anchorMax = new Vector2(1f, 1f);
+            rect.pivot = new Vector2(1f, 1f);
+            rect.sizeDelta = size;
+            rect.anchoredPosition = offset;
+
+            toastObject.SetActive(true);
+
+            return text;
         }
 
         public void UpdateWatermark(KeyCode keyCode)
@@ -181,6 +224,51 @@ namespace ReplayLogger
 
             flagSpriteInCanvas.gameObject.SetActive(false);
 
+        }
+
+        public void ShowSavedFileToast(string fileName, float seconds)
+        {
+            if (_canvas == null || savedFileToast == null)
+            {
+                return;
+            }
+
+            savedFileToast.text = fileName;
+            savedFileToast.gameObject.SetActive(true);
+            _canvas.GetComponent<MonoBehaviour>()?.StartCoroutine(HideToastAfterDelay(seconds));
+        }
+
+        private IEnumerator HideToastAfterDelay(float seconds)
+        {
+            yield return new WaitForSecondsRealtime(seconds);
+            if (savedFileToast != null)
+            {
+                savedFileToast.gameObject.SetActive(false);
+            }
+        }
+
+        public void ClearHud()
+        {
+            if (prefabNumberInCanvas != null)
+            {
+                prefabNumberInCanvas.gameObject.SetActive(false);
+            }
+
+            if (timeInCanvas != null)
+            {
+                timeInCanvas.gameObject.SetActive(false);
+            }
+
+            if (flagSpriteInCanvas != null)
+            {
+                flagSpriteInCanvas.gameObject.SetActive(false);
+            }
+        }
+
+        private IEnumerator DestroyAfterDelay(float seconds)
+        {
+            yield return new WaitForSecondsRealtime(seconds);
+            DestroyCanvas();
         }
     }
 }
