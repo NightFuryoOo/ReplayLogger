@@ -35,14 +35,7 @@ namespace ReplayLogger
             {
                 return new List<string>();
             }
-
-            List<string> encrypted = new(snapshot.Count);
-            foreach (string line in snapshot)
-            {
-                encrypted.Add(KeyloggerLogEncryption.EncryptLog(line));
-            }
-
-            return encrypted;
+            return snapshot;
         }
 
         public static void WriteEncryptedModSnapshot(StreamWriter writer, string modsDir, string separatorAfter = null)
@@ -53,12 +46,12 @@ namespace ReplayLogger
             }
             foreach (string line in GetEncryptedModSnapshot(modsDir))
             {
-                writer.WriteLine(line);
+                LogWrite.EncryptedLine(writer, line);
             }
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -166,13 +159,13 @@ namespace ReplayLogger
             {
                 foreach (string line in skills)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(line));
+                    LogWrite.EncryptedLine(writer, line);
                 }
             }
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -185,19 +178,19 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n------------------------DAMAGE INV------------------------\n"));
+            LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE INV------------------------\n");
 
             if (logs != null)
             {
                 foreach (string log in logs)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(log));
+                    LogWrite.EncryptedLine(writer, log);
                 }
             }
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -210,12 +203,12 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n------------------------DAMAGE INV------------------------\n"));
+            LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE INV------------------------\n");
             logs?.WriteEncryptedLines(writer);
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -228,7 +221,7 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+            LogWrite.EncryptedLine(writer, separator);
             writer.Flush();
         }
 
@@ -244,15 +237,15 @@ namespace ReplayLogger
             {
                 foreach (string line in noBlurSettings)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(line));
+                    LogWrite.EncryptedLine(writer, line);
                 }
 
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(string.Empty));
+                LogWrite.EncryptedLine(writer, string.Empty);
             }
 
             if (!string.IsNullOrEmpty(separator) && noBlurSettings.Count > 0)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                LogWrite.EncryptedLine(writer, separator);
             }
         }
 
@@ -268,15 +261,15 @@ namespace ReplayLogger
             {
                 foreach (string line in caSettings)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(line));
+                    LogWrite.EncryptedLine(writer, line);
                 }
 
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(string.Empty));
+                LogWrite.EncryptedLine(writer, string.Empty);
             }
 
             if (!string.IsNullOrEmpty(separator) && caSettings.Count > 0)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                LogWrite.EncryptedLine(writer, separator);
             }
         }
 
@@ -287,25 +280,25 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("CONTROL:"));
+            LogWrite.EncryptedLine(writer, "CONTROL:");
 
             IReadOnlyList<string> lines = BuildControlLines();
             if (lines.Count == 0)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog("  (unavailable)"));
+                LogWrite.EncryptedLine(writer, "  (unavailable)");
             }
             else
             {
                 foreach (string line in lines)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(line));
+                    LogWrite.EncryptedLine(writer, line);
                 }
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(string.Empty));
+            LogWrite.EncryptedLine(writer, string.Empty);
             if (!string.IsNullOrEmpty(separator))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                LogWrite.EncryptedLine(writer, separator);
             }
         }
 
@@ -575,18 +568,18 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("Warnings:"));
+            LogWrite.EncryptedLine(writer, "Warnings:");
             if (warnings != null)
             {
                 foreach (string warning in warnings)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(warning));
+                    LogWrite.EncryptedLine(writer, warning);
                 }
             }
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -599,12 +592,12 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("Warnings:"));
+            LogWrite.EncryptedLine(writer, "Warnings:");
             warnings?.WriteEncryptedLines(writer);
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -617,18 +610,18 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("SpeedWarn:"));
+            LogWrite.EncryptedLine(writer, "SpeedWarn:");
             if (warnings != null)
             {
                 foreach (string warning in warnings)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(warning));
+                    LogWrite.EncryptedLine(writer, warning);
                 }
             }
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -641,12 +634,12 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("SpeedWarn:"));
+            LogWrite.EncryptedLine(writer, "SpeedWarn:");
             warnings?.WriteEncryptedLines(writer);
 
             if (!string.IsNullOrEmpty(separatorAfter))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separatorAfter));
+                LogWrite.EncryptedLine(writer, separatorAfter);
             }
 
             writer.Flush();
@@ -769,7 +762,7 @@ namespace ReplayLogger
             long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             string label = initial ? "GameSpeedStart" : "GameSpeedChange";
             string entry = $"{label}|+{unixTime - lastUnixTime}|{(scale * 100f):F0}% ({scale:F3})";
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(entry));
+            LogWrite.EncryptedLine(writer, entry);
             writer.Flush();
         }
 
@@ -782,7 +775,7 @@ namespace ReplayLogger
 
             double durationSeconds = (now - speedDeviationStartUnix) / 1000.0;
             string entry = $"SpeedWarn|+{now - lastUnixTime}|Default {(defaultTimeScale * 100f):F0}% ({defaultTimeScale:F3}) -> {(currentScale * 100f):F0}% ({currentScale:F3})|Duration {durationSeconds.ToString("F2", CultureInfo.InvariantCulture)}s";
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(entry));
+            LogWrite.EncryptedLine(writer, entry);
             writer.Flush();
 
             CoreSessionLogger.AddSpeedWarning(warnings, arenaName, now - lastUnixTime, defaultTimeScale, currentScale, durationSeconds);
@@ -883,7 +876,7 @@ namespace ReplayLogger
                 ? $"Heal|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} mask(s)"
                 : $"HitWarn|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} mask(s)";
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(entry));
+            LogWrite.EncryptedLine(writer, entry);
             writer.Flush();
 
             string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
@@ -899,7 +892,7 @@ namespace ReplayLogger
                 ? $"Heal|Lifeblood|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta}"
                 : $"HitWarn|Lifeblood|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} lifeblood";
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(entry));
+            LogWrite.EncryptedLine(writer, entry);
             writer.Flush();
 
             string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
@@ -989,18 +982,18 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("DamageChange:"));
+            LogWrite.EncryptedLine(writer, "DamageChange:");
             foreach (var entry in SortLogsByObjectName(tracker.Changes))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"{entry.Key}:"));
+                LogWrite.EncryptedLine(writer, $"{entry.Key}:");
                 foreach (string log in entry.Value)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"  {log}"));
+                    LogWrite.EncryptedLine(writer, $"  {log}");
                 }
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n"));
+                LogWrite.EncryptedLine(writer, "\n");
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("---------------------------------------------------"));
+            LogWrite.EncryptedLine(writer, "---------------------------------------------------");
         }
 
         private static string ExtractObjectName(string log)
@@ -1070,19 +1063,19 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("Flukenest:"));
+            LogWrite.EncryptedLine(writer, "Flukenest:");
             if (tracker.Entries.Count == 0)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog("  (none)"));
+                LogWrite.EncryptedLine(writer, "  (none)");
             }
             else
             {
                 foreach (string log in tracker.Entries)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(log));
+                    LogWrite.EncryptedLine(writer, log);
                 }
             }
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n"));
+            LogWrite.EncryptedLine(writer, "\n");
         }
 
         public static void WriteSectionWithSeparator(StreamWriter writer, FlukenestTracker tracker, string separator = "---------------------------------------------------")
@@ -1095,7 +1088,7 @@ namespace ReplayLogger
             WriteSection(writer, tracker);
             if (!string.IsNullOrEmpty(separator))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                LogWrite.EncryptedLine(writer, separator);
             }
         }
 

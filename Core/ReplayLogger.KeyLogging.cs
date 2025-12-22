@@ -51,7 +51,7 @@ namespace ReplayLogger
                     string logEntry = $"+{unixTime - lastUnixTime}|{formattedKey}|{keyStatus}|{watermarkNumber}|#{watermarkColor}|{fps.ToString("F0")}|";
                     try
                     {
-                        writer?.WriteLine(KeyloggerLogEncryption.EncryptLog(logEntry));
+                        LogWrite.EncryptedLine(writer, logEntry);
                         writer?.Flush();
                     }
                     catch (Exception e)

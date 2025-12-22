@@ -61,11 +61,7 @@ namespace ReplayLogger
                 using StreamWriter writer = new(tempPath, append: true);
                 foreach (string line in pending)
                 {
-                    string encrypted = KeyloggerLogEncryption.EncryptLog(line);
-                    if (!string.IsNullOrEmpty(encrypted))
-                    {
-                        writer.WriteLine(encrypted);
-                    }
+                    writer.WriteLine(line ?? string.Empty);
                 }
                 writer.Flush();
                 pending.Clear();
@@ -96,7 +92,7 @@ namespace ReplayLogger
                 string line;
                 while ((line = reader.ReadLine()) != null)
                 {
-                    writer.WriteLine(line);
+                    LogWrite.EncryptedLine(writer, line);
                 }
             }
             catch

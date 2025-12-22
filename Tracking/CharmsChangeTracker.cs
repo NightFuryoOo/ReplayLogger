@@ -65,23 +65,23 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("Charms:"));
+            LogWrite.EncryptedLine(writer, "Charms:");
             if (changes.Count == 0)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog("  (no changes)"));
+                LogWrite.EncryptedLine(writer, "  (no changes)");
             }
             else
             {
                 foreach (string entry in changes)
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(entry));
+                    LogWrite.EncryptedLine(writer, entry);
                 }
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(string.Empty));
+            LogWrite.EncryptedLine(writer, string.Empty);
             if (!string.IsNullOrEmpty(separator))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                LogWrite.EncryptedLine(writer, separator);
             }
         }
 
@@ -104,7 +104,7 @@ namespace ReplayLogger
             inlineEvents.Add(entry);
             if (writer != null)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(entry));
+                LogWrite.EncryptedLine(writer, entry);
                 writer.Flush();
             }
         }

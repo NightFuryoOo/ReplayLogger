@@ -37,6 +37,7 @@ namespace ReplayLogger
         private bool isPlayChalange = false;
         private int bossCounter;
 
+        private const int LogQueueCapacity = 20000;
         private const int BufferedSectionThreshold = 200;
         private BufferedLogSection DamageAnfInv;
         private BufferedLogSection InvWarn;
@@ -430,7 +431,7 @@ namespace ReplayLogger
                         InvWarn = new BufferedLogSection($"{currentNameLog}.warn.tmp", BufferedSectionThreshold);
                         speedWarnBuffer = new BufferedLogSection($"{currentNameLog}.speed.tmp", BufferedSectionThreshold);
                         hitWarnBuffer = new BufferedLogSection($"{currentNameLog}.hit.tmp", BufferedSectionThreshold);
-                        writer = new StreamWriter(currentNameLog, false);
+                        writer = new AsyncLogWriter(currentNameLog, append: false, LogQueueCapacity);
                         AheSettingsManager.RefreshSnapshot();
                         speedWarnTracker.Reset(Mathf.Max(Time.timeScale, 0f));
                         hitWarnTracker.Reset();
@@ -440,7 +441,7 @@ namespace ReplayLogger
                         debugHotkeysTracker.InitializeBindings();
                         charmsChangeTracker.Reset();
                         CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
-                        writer?.WriteLine(KeyloggerLogEncryption.EncryptLog(CoreSessionLogger.BuildEquippedCharmsLine()));
+                        LogWrite.EncryptedLine(writer, CoreSessionLogger.BuildEquippedCharmsLine());
                         CoreSessionLogger.WriteEncryptedSkillLines(writer, "---------------------------------------------------");
                         speedWarnTracker.LogInitial(writer, lastUnixTime);
                         InitializeDebugModHooks();
@@ -463,14 +464,14 @@ namespace ReplayLogger
 
                         DamageAnfInv.Add($"{dataTime}|{lastUnixTime}|{self.TargetSceneName}| {bossCounter}*");
 
-                        writer?.WriteLine(KeyloggerLogEncryption.EncryptLog($"{dataTime}|{lastUnixTime}|{curentPlayTime}|{self.TargetSceneName}| {bossCounter}*"));
+                        LogWrite.EncryptedLine(writer, $"{dataTime}|{lastUnixTime}|{curentPlayTime}|{self.TargetSceneName}| {bossCounter}*");
                     }
                     else
                     {
 
                         DamageAnfInv.Add($"{dataTime}|{lastUnixTime}|{self.TargetSceneName}|");
 
-                        writer?.WriteLine(KeyloggerLogEncryption.EncryptLog($"{dataTime}|{lastUnixTime}|{curentPlayTime}|{self.TargetSceneName}|"));
+                        LogWrite.EncryptedLine(writer, $"{dataTime}|{lastUnixTime}|{curentPlayTime}|{self.TargetSceneName}|");
                     }
                     writer?.Flush();
 
@@ -516,7 +517,7 @@ namespace ReplayLogger
                     StartLoad();
                     DamageAnfInv.Add($"{dataTime}|{lastUnixTime}|{self.TargetSceneName}{((!skipScenes.Contains(self.TargetSceneName)) ? $"| {bossCounter}*" : "")}");
 
-                    writer?.WriteLine(KeyloggerLogEncryption.EncryptLog($"{dataTime}|{lastUnixTime}|{self.TargetSceneName}|{{sprite}}{self.TargetSceneName}{((!skipScenes.Contains(self.TargetSceneName)) ? $"| {bossCounter}*" : "")}"));
+                    LogWrite.EncryptedLine(writer, $"{dataTime}|{lastUnixTime}|{self.TargetSceneName}|{{sprite}}{self.TargetSceneName}{((!skipScenes.Contains(self.TargetSceneName)) ? $"| {bossCounter}*" : "")}");
                     writer?.Flush();
 
                 }
@@ -571,17 +572,17 @@ namespace ReplayLogger
                 if (writer != null)
                 {
                     long EndTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"StartTime: {ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ConvertUnixTimeToDateTimeString(EndTime)}, TimeInPlay: {ConvertUnixTimeToTimeString(EndTime - startUnixTime)}"));
+                    LogWrite.EncryptedLine(writer, $"StartTime: {ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ConvertUnixTimeToDateTimeString(EndTime)}, TimeInPlay: {ConvertUnixTimeToTimeString(EndTime - startUnixTime)}");
 
                     CoreSessionLogger.WriteDamageInvSection(writer, DamageAnfInv, separatorAfter: null);
 
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"StartTime: {ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ConvertUnixTimeToDateTimeString(EndTime)}, TimeInPlay: {ConvertUnixTimeToTimeString(EndTime - startUnixTime)}"));
+                    LogWrite.EncryptedLine(writer, $"StartTime: {ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ConvertUnixTimeToDateTimeString(EndTime)}, TimeInPlay: {ConvertUnixTimeToTimeString(EndTime - startUnixTime)}");
                     CoreSessionLogger.WriteSeparator(writer);
-                    writer?.WriteLine(KeyloggerLogEncryption.EncryptLog("\n\n"));
+                    LogWrite.EncryptedLine(writer, "\n\n");
 
                     CoreSessionLogger.WriteWarningsSection(writer, InvWarn);
 
-                    writer?.WriteLine(KeyloggerLogEncryption.EncryptLog("\n\n"));
+                    LogWrite.EncryptedLine(writer, "\n\n");
                     if (speedWarnBuffer != null)
                     {
                         speedWarnBuffer.AddRange(speedWarnTracker.Warnings);
@@ -589,14 +590,14 @@ namespace ReplayLogger
                     speedWarnTracker.ClearWarnings();
                     CoreSessionLogger.WriteSpeedWarningsSection(writer, speedWarnBuffer);
 
-                    writer?.WriteLine(KeyloggerLogEncryption.EncryptLog("HitWarn:"));
+                    LogWrite.EncryptedLine(writer, "HitWarn:");
                     if (hitWarnBuffer != null)
                     {
                         hitWarnBuffer.AddRange(hitWarnTracker.Warnings);
                         hitWarnBuffer.WriteEncryptedLines(writer);
                     }
-                    writer?.WriteLine(KeyloggerLogEncryption.EncryptLog("\n\n"));
-                    writer?.WriteLine(KeyloggerLogEncryption.EncryptLog("---------------------------------------------------"));
+                    LogWrite.EncryptedLine(writer, "\n\n");
+                    LogWrite.EncryptedLine(writer, "---------------------------------------------------");
                     hitWarnTracker.Reset();
 
                     charmsChangeTracker.Write(writer);
@@ -614,12 +615,12 @@ namespace ReplayLogger
                     CoreSessionLogger.WriteNoBlurSettings(writer);
                     CoreSessionLogger.WriteCustomizableAbilitiesSettings(writer);
                     CoreSessionLogger.WriteControlSettings(writer);
-                    writer?.WriteLine(KeyloggerLogEncryption.EncryptLog('\n' + isСhallengeСompleted + '\n'));
+                    LogWrite.EncryptedLine(writer, '\n' + isСhallengeСompleted + '\n');
 
                     HardwareFingerprint.WriteEncryptedLine(writer);
                     CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
 
-                    writer.Write(lastString);
+                    LogWrite.Raw(writer, lastString);
                     writer.Flush();
                     writer.Close();
                     writer = null;

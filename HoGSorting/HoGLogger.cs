@@ -46,6 +46,7 @@ namespace ReplayLogger
         private static string pendingHoGDefaultFolder = HoGLoggerConditions.DefaultBucket;
         private static readonly Dictionary<string, BossHpState> bossHpStates = new(StringComparer.Ordinal);
         private const int BufferedSectionThreshold = 200;
+        private const int LogQueueCapacity = 20000;
 
         private static long lastUnixTime;
         private static long startUnixTime;
@@ -201,7 +202,7 @@ namespace ReplayLogger
 
                     try
                     {
-                        writer.WriteLine(KeyloggerLogEncryption.EncryptLog(startLine));
+                        LogWrite.EncryptedLine(writer, startLine);
                         writer.Flush();
                     }
                     catch (Exception e)
@@ -216,7 +217,7 @@ namespace ReplayLogger
                 string logEntry = $"+{delta}|{formattedKey}|{keyStatus}|{watermarkNumber}|#{watermarkColor}|{fps.ToString("F0")}|";
                 try
                 {
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(logEntry));
+                    LogWrite.EncryptedLine(writer, logEntry);
                     writer.Flush();
                 }
                 catch (Exception e)
@@ -635,7 +636,7 @@ namespace ReplayLogger
                 {
                     try
                     {
-                        writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                        LogWrite.EncryptedLine(writer, separator);
                         writer.Flush();
                     }
                     catch (Exception e)
@@ -685,12 +686,12 @@ namespace ReplayLogger
                     speedWarnBuffer = new BufferedLogSection($"{currentTempFile}.speed.tmp", BufferedSectionThreshold);
                     hitWarnBuffer = new BufferedLogSection($"{currentTempFile}.hit.tmp", BufferedSectionThreshold);
 
-                    writer = new StreamWriter(currentTempFile, false);
+                    writer = new AsyncLogWriter(currentTempFile, append: false, LogQueueCapacity);
 
                     CoreSessionLogger.WriteEncryptedModSnapshot(writer, ModsDirectory, "---------------------------------------------------");
 
                     string equippedCharms = CoreSessionLogger.BuildEquippedCharmsLine();
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog(equippedCharms));
+                    LogWrite.EncryptedLine(writer, equippedCharms);
                     CoreSessionLogger.WriteEncryptedSkillLines(writer, "---------------------------------------------------");
 
                     int currentPlayTime = (int)(PlayerData.instance.playTime * 100);
@@ -728,7 +729,7 @@ namespace ReplayLogger
                     }
 
                     damageAndInv.Add($"{timestamp}|{lastUnixTime}|{arenaName}| {bossCounter}*");
-                    writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"{timestamp}|{lastUnixTime}|{currentPlayTime}|{arenaName}| {bossCounter}*"));
+                    LogWrite.EncryptedLine(writer, $"{timestamp}|{lastUnixTime}|{currentPlayTime}|{arenaName}| {bossCounter}*");
                     writer.Flush();
 
                     speedWarnTracker.Reset(Mathf.Max(Time.timeScale, 0f));
@@ -784,14 +785,14 @@ namespace ReplayLogger
 
             long endUnixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"StartTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(endUnixTime)}, TimeInPlay: {ReplayLogger.ConvertUnixTimeToTimeString(endUnixTime - startUnixTime)}"));
+            LogWrite.EncryptedLine(writer, $"StartTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(endUnixTime)}, TimeInPlay: {ReplayLogger.ConvertUnixTimeToTimeString(endUnixTime - startUnixTime)}");
             CoreSessionLogger.WriteDamageInvSection(writer, damageAndInv, separatorAfter: null);
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"StartTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(endUnixTime)}, TimeInPlay: {ReplayLogger.ConvertUnixTimeToTimeString(endUnixTime - startUnixTime)}"));
+            LogWrite.EncryptedLine(writer, $"StartTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(endUnixTime)}, TimeInPlay: {ReplayLogger.ConvertUnixTimeToTimeString(endUnixTime - startUnixTime)}");
             CoreSessionLogger.WriteSeparator(writer);
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n\n"));
+            LogWrite.EncryptedLine(writer, "\n\n");
             CoreSessionLogger.WriteWarningsSection(writer, invWarnings);
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n\n"));
+            LogWrite.EncryptedLine(writer, "\n\n");
             if (speedWarnBuffer != null)
             {
                 speedWarnBuffer.AddRange(speedWarnTracker.Warnings);
@@ -799,27 +800,27 @@ namespace ReplayLogger
             speedWarnTracker.ClearWarnings();
             CoreSessionLogger.WriteSpeedWarningsSection(writer, speedWarnBuffer);
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n\n"));
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("HitWarn:"));
+            LogWrite.EncryptedLine(writer, "\n\n");
+            LogWrite.EncryptedLine(writer, "HitWarn:");
             if (hitWarnBuffer != null)
             {
                 hitWarnBuffer.AddRange(hitWarnTracker.Warnings);
             }
             hitWarnTracker.ClearWarnings();
             hitWarnBuffer?.WriteEncryptedLines(writer);
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("\n\n"));
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("---------------------------------------------------"));
+            LogWrite.EncryptedLine(writer, "\n\n");
+            LogWrite.EncryptedLine(writer, "---------------------------------------------------");
             DamageChangeTracker.WriteSection(writer, damageChangeTracker);
             FlukenestTracker.WriteSectionWithSeparator(writer, flukenestTracker);
             charmsChangeTracker.Write(writer);
 
             RefreshBucketInfo(force: true);
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("-"));
+            LogWrite.EncryptedLine(writer, "-");
             AheSettingsManager.WriteSettingsWithSeparator(writer);
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog($"HoG Bucket: {currentBucketInfo.BucketLabel ?? HoGLoggerConditions.DefaultBucket}"));
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(string.Empty));
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog("---------------------------------------------------"));
+            LogWrite.EncryptedLine(writer, $"HoG Bucket: {currentBucketInfo.BucketLabel ?? HoGLoggerConditions.DefaultBucket}");
+            LogWrite.EncryptedLine(writer, string.Empty);
+            LogWrite.EncryptedLine(writer, "---------------------------------------------------");
             ZoteSettingsManager.WriteSettingsWithSeparator(writer);
             CollectorPhasesSettingsManager.WriteSettingsWithSeparator(writer);
             SafeGodseekerQolIntegration.WriteSettingsWithSeparator(writer);
@@ -835,7 +836,7 @@ namespace ReplayLogger
             HardwareFingerprint.WriteEncryptedLine(writer);
             CoreSessionLogger.WriteEncryptedModSnapshot(writer, ModsDirectory, "---------------------------------------------------");
 
-            writer.Write(masterKeyBlob);
+            LogWrite.Raw(writer, masterKeyBlob);
             writer.Flush();
             writer.Dispose();
 
@@ -1492,7 +1493,7 @@ namespace ReplayLogger
 
             long delta = unixTime - lastUnixTime;
             string entry = $"DebugHotkey|+{delta}|{actionName}|{keyCode}";
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(entry));
+            LogWrite.EncryptedLine(writer, entry);
             writer.Flush();
 
             string arenaName = activeArena ?? "UnknownArena";

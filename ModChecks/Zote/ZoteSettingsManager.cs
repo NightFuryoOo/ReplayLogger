@@ -33,12 +33,12 @@ namespace ReplayLogger
 
             foreach (string line in lines)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(line));
+                LogWrite.EncryptedLine(writer, line);
             }
 
             if (!string.IsNullOrEmpty(separator))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                LogWrite.EncryptedLine(writer, separator);
             }
         }
     }

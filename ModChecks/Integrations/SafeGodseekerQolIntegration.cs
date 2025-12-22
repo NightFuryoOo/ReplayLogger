@@ -157,13 +157,13 @@ namespace ReplayLogger
 
             foreach (string line in lines)
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(line));
+                LogWrite.EncryptedLine(writer, line);
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(string.Empty));
+            LogWrite.EncryptedLine(writer, string.Empty);
             if (!string.IsNullOrEmpty(separator))
             {
-                writer.WriteLine(KeyloggerLogEncryption.EncryptLog(separator));
+                LogWrite.EncryptedLine(writer, separator);
             }
         }
 

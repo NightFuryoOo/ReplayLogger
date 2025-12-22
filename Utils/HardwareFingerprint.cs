@@ -40,7 +40,7 @@ namespace ReplayLogger
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(GetHashLine()));
+            LogWrite.EncryptedLine(writer, GetHashLine());
         }
 
         private static void EnsureComputed()
