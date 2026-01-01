@@ -8,6 +8,8 @@ namespace ReplayLogger
 {
     public partial class ReplayLogger
     {
+        private static readonly KeyCode[] CachedKeyCodes = (KeyCode[])Enum.GetValues(typeof(KeyCode));
+
         private void CheckPressedKey(On.GameManager.orig_Update orig, GameManager self)
         {
             orig(self);
@@ -28,16 +30,15 @@ namespace ReplayLogger
             FlushWarningsIfNeeded(speedWarnBuffer, speedWarnTracker.Warnings, speedWarnTracker.ClearWarnings);
             FlushWarningsIfNeeded(hitWarnBuffer, hitWarnTracker.Warnings, hitWarnTracker.ClearWarnings);
 
-            DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.Now.ToUnixTimeMilliseconds() - startUnixTime);
+            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(unixTime - startUnixTime);
             customCanvas?.UpdateTime(dateTimeOffset.ToString("HH:mm:ss"));
 
-            foreach (KeyCode keyCode in Enum.GetValues(typeof(KeyCode)))
+            foreach (KeyCode keyCode in CachedKeyCodes)
             {
                 if (Input.GetKeyDown(keyCode) || Input.GetKeyUp(keyCode))
                 {
                     string keyStatus = Input.GetKeyDown(keyCode) ? "+" : "-";
-
-                    long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
                     float fps = Time.unscaledDeltaTime == 0 ? lastFps : 1f / Time.unscaledDeltaTime;
                     lastFps = fps;
@@ -66,7 +67,7 @@ namespace ReplayLogger
                 }
             }
 
-            FlushKeyLogBufferIfNeeded(DateTimeOffset.Now.ToUnixTimeMilliseconds());
+            FlushKeyLogBufferIfNeeded(unixTime);
         }
 
         private void FlushWarningsIfNeeded(BufferedLogSection buffer, IReadOnlyList<string> warnings, Action clearAction)
