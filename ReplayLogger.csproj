@@ -15,9 +15,10 @@
     <Product>ReplayLogger</Product>
     <Description>A Hollow Knight Mod</Description>
     <Copyright>Copyright ©  2025</Copyright>
-    <AssemblyVersion>1.0.1.1</AssemblyVersion>
-    <FileVersion>1.0.1.1</FileVersion>
-    <Version>1.0.1.1</Version>
+    <AssemblyVersion>1.0.1.2</AssemblyVersion>
+    <FileVersion>1.0.1.2</FileVersion>
+    <Version>1.0.1.2</Version>
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
     <OutputPath>bin\$(Configuration)\</OutputPath>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

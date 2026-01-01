@@ -68,6 +68,11 @@ namespace ReplayLogger
         private const int KeyLogFlushIntervalMs = 200;
         private const int KeyLogFlushBatchSize = 50;
         private static long lastKeyLogFlushTime;
+        private static readonly KeyCode[] AllKeyCodes = (KeyCode[])Enum.GetValues(typeof(KeyCode));
+        private static readonly HashSet<KeyCode> pressedKeys = new();
+        private static readonly List<KeyCode> pressedKeysBuffer = new();
+        private const float EnemyUpdateIntervalSeconds = 0.1f;
+        private static float lastEnemyUpdateTime;
         private static List<string> debugModEvents = new();
         private static List<string> debugHotkeyBindings = new();
         private static List<string> debugHotkeyEvents = new();
@@ -177,70 +182,106 @@ namespace ReplayLogger
             DateTimeOffset relative = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.Now.ToUnixTimeMilliseconds() - startUnixTime);
             customCanvas?.UpdateTime(relative.ToString("HH:mm:ss"));
 
-            foreach (KeyCode keyCode in Enum.GetValues(typeof(KeyCode)))
+            bool anyKeyDown = Input.anyKeyDown;
+            if (anyKeyDown)
             {
-                if (!Input.GetKeyDown(keyCode) && !Input.GetKeyUp(keyCode))
+                foreach (KeyCode keyCode in AllKeyCodes)
                 {
-                    continue;
-                }
-
-                string keyStatus = Input.GetKeyDown(keyCode) ? "+" : "-";
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                float fps = Time.unscaledDeltaTime == 0 ? lastFps : 1f / Time.unscaledDeltaTime;
-                lastFps = fps;
-
-                customCanvas?.UpdateWatermark(keyCode);
-
-                int watermarkNumber = customCanvas?.numberInCanvas?.Number ?? 0;
-                Color watermarkColorStruct = customCanvas?.numberInCanvas?.Color ?? Color.white;
-                string watermarkColor = ColorUtility.ToHtmlStringRGBA(watermarkColorStruct);
-
-                long delta = unixTime - lastUnixTime;
-
-                if (lastLoggedDeltaMs >= 0 && delta < lastLoggedDeltaMs)
-                {
-                    currentAttemptIndex++;
-                    bossCounter++;
-                    string timestamp = DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss.fff", CultureInfo.InvariantCulture);
-                    long playTime = (int)(PlayerData.instance.playTime * 100);
-                    string startLine = $"{timestamp}|{unixTime}|{playTime}|{activeArena}| {bossCounter}*";
-                    damageAndInv.Add(startLine);
-
-                    try
+                    bool isDown = Input.GetKeyDown(keyCode);
+                    bool isUp = Input.GetKeyUp(keyCode);
+                    if (!isDown && !isUp)
                     {
-                        FlushKeyLogBufferIfNeeded(unixTime, force: true);
-                        LogWrite.EncryptedLine(writer, startLine);
+                        continue;
                     }
-                    catch (Exception e)
+
+                    if (isDown)
                     {
-                        Modding.Logger.LogWarn($"HoGLogger: failed to write attempt separator/start line: {e.Message}");
+                        pressedKeys.Add(keyCode);
                     }
-                }
-
-                lastLoggedDeltaMs = delta;
-
-                string formattedKey = JoystickKeyMapper.FormatKey(keyCode);
-                string logEntry = $"+{delta}|{formattedKey}|{keyStatus}|{watermarkNumber}|#{watermarkColor}|{fps.ToString("F0")}|";
-                try
-                {
-                    keyLogBuffer.Add(logEntry);
-                }
-                catch (Exception e)
-                {
-                    Modding.Logger.LogError($"HoGLogger: failed to write key entry: {e.Message}");
-                }
-
-                if (keyStatus == "+" && debugHotkeysByKey.Count > 0 && debugHotkeysByKey.TryGetValue(keyCode, out List<string> debugActions))
-                {
-                    debugHotkeysTracker.TrackActivation(keyCode, activeArena ?? "UnknownArena", lastUnixTime, unixTime);
-                    foreach (string action in debugActions)
+                    else if (isUp)
                     {
-                        LogDebugHotkeyActivation(action, keyCode, unixTime);
+                        pressedKeys.Remove(keyCode);
                     }
+
+                    HandleKeyEvent(keyCode, isDown);
+                }
+            }
+            else if (pressedKeys.Count > 0)
+            {
+                pressedKeysBuffer.Clear();
+                foreach (KeyCode keyCode in pressedKeys)
+                {
+                    pressedKeysBuffer.Add(keyCode);
+                }
+
+                foreach (KeyCode keyCode in pressedKeysBuffer)
+                {
+                    if (!Input.GetKeyUp(keyCode))
+                    {
+                        continue;
+                    }
+
+                    pressedKeys.Remove(keyCode);
+                    HandleKeyEvent(keyCode, isDown: false);
                 }
             }
 
-            FlushKeyLogBufferIfNeeded(DateTimeOffset.Now.ToUnixTimeMilliseconds());
+            
+        }
+
+        private static void HandleKeyEvent(KeyCode keyCode, bool isDown)
+        {
+            string keyStatus = isDown ? "+" : "-";
+            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            float fps = Time.unscaledDeltaTime == 0 ? lastFps : 1f / Time.unscaledDeltaTime;
+            lastFps = fps;
+
+            customCanvas?.UpdateWatermark(keyCode);
+
+            int watermarkNumber = customCanvas?.numberInCanvas?.Number ?? 0;
+            Color watermarkColorStruct = customCanvas?.numberInCanvas?.Color ?? Color.white;
+
+            long delta = unixTime - lastUnixTime;
+
+            if (lastLoggedDeltaMs >= 0 && delta < lastLoggedDeltaMs)
+            {
+                currentAttemptIndex++;
+                bossCounter++;
+                string timestamp = DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss.fff", CultureInfo.InvariantCulture);
+                long playTime = (int)(PlayerData.instance.playTime * 100);
+                string startLine = $"{timestamp}|{unixTime}|{playTime}|{activeArena}| {bossCounter}*";
+                damageAndInv.Add(startLine);
+
+                try
+                {
+                    InlineEventRecorder.RecordLine(writer, startLine);
+                }
+                catch (Exception e)
+                {
+                    Modding.Logger.LogWarn($"HoGLogger: failed to write attempt separator/start line: {e.Message}");
+                }
+            }
+
+            lastLoggedDeltaMs = delta;
+
+            try
+            {
+                int fpsValue = Mathf.RoundToInt(fps);
+                InlineEventRecorder.RecordKeyEvent(writer, (int)delta, keyCode, isDown, watermarkNumber, watermarkColorStruct, fpsValue);
+            }
+            catch (Exception e)
+            {
+                Modding.Logger.LogError($"HoGLogger: failed to write key entry: {e.Message}");
+            }
+
+            if (isDown && debugHotkeysByKey.Count > 0 && debugHotkeysByKey.TryGetValue(keyCode, out List<string> debugActions))
+            {
+                debugHotkeysTracker.TrackActivation(keyCode, activeArena ?? "UnknownArena", lastUnixTime, unixTime);
+                foreach (string action in debugActions)
+                {
+                    LogDebugHotkeyActivation(action, keyCode, unixTime);
+                }
+            }
         }
 
         private static void BossSceneController_Update(On.BossSceneController.orig_Update orig, BossSceneController self)
@@ -643,7 +684,7 @@ namespace ReplayLogger
                 {
                     try
                     {
-                        LogWrite.EncryptedLine(writer, separator);
+                        InlineEventRecorder.RecordLine(writer, separator);
                     }
                     catch (Exception e)
                     {
@@ -670,6 +711,7 @@ namespace ReplayLogger
 
                     startUnixTime = lastUnixTime;
                     bossCounter = 1;
+                    InlineEventRecorder.RecoverPendingLogs(DllDirectory, Path.GetTempPath());
                     masterKeyBlob = KeyloggerLogEncryption.GenerateKeyAndIV();
                     AllHallownestEnhancedToggleSnapshot snapshot = AheSettingsManager.RefreshSnapshot();
                     pendingHoGDefaultFolder = HoGLoggerConditions.DefaultBucket;
@@ -693,6 +735,7 @@ namespace ReplayLogger
                     hitWarnBuffer = new BufferedLogSection($"{currentTempFile}.hit.tmp", BufferedSectionThreshold);
 
                     writer = new AsyncLogWriter(currentTempFile, append: false, LogQueueCapacity);
+                    InlineEventRecorder.Start(currentTempFile, masterKeyBlob);
 
                     CoreSessionLogger.WriteEncryptedModSnapshot(writer, ModsDirectory, "---------------------------------------------------");
 
@@ -719,6 +762,8 @@ namespace ReplayLogger
                     debugHotkeyEvents = new();
                     keyLogBuffer.Clear();
                     lastKeyLogFlushTime = 0;
+                    pressedKeys.Clear();
+                    pressedKeysBuffer.Clear();
                     damageChangeTracker.Reset();
                     flukenestTracker.Reset();
                     infoBoss = new();
@@ -794,7 +839,7 @@ namespace ReplayLogger
 
             long endUnixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             string sessionTime = ReplayLogger.ConvertUnixTimeToTimeString((long)(Time.realtimeSinceStartup * 1000f));
-            FlushKeyLogBufferIfNeeded(endUnixTime, force: true);
+            InlineEventRecorder.StopAndWrite(writer);
 
             LogWrite.EncryptedLine(writer, $"StartTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ReplayLogger.ConvertUnixTimeToDateTimeString(endUnixTime)}, TimeInPlay: {ReplayLogger.ConvertUnixTimeToTimeString(endUnixTime - startUnixTime)}, SessionTime: {sessionTime}");
             CoreSessionLogger.WriteDamageInvSection(writer, damageAndInv, separatorAfter: null);
@@ -877,6 +922,9 @@ namespace ReplayLogger
             debugHotkeyEvents = new();
             keyLogBuffer.Clear();
             lastKeyLogFlushTime = 0;
+            pressedKeys.Clear();
+            pressedKeysBuffer.Clear();
+            InlineEventRecorder.Stop(discard: true);
             debugHotkeysTracker.Reset();
             debugMenuTracker.Reset();
             godhomeQolTracker.Reset();
@@ -1362,6 +1410,12 @@ namespace ReplayLogger
 
         private static void EnemyUpdate()
         {
+            float now = Time.unscaledTime;
+            if (now - lastEnemyUpdateTime < EnemyUpdateIntervalSeconds)
+            {
+                return;
+            }
+            lastEnemyUpdateTime = now;
             List<HKHealthManager> healthManagers = new();
             float searchRadius = 100f;
             int enemyLayer = Physics2D.AllLayers;
@@ -1532,7 +1586,7 @@ namespace ReplayLogger
 
             long delta = unixTime - lastUnixTime;
             string entry = $"DebugHotkey|+{delta}|{actionName}|{keyCode}";
-            LogWrite.EncryptedLine(writer, entry);
+            InlineEventRecorder.RecordLine(writer, entry);
 
             string arenaName = activeArena ?? "UnknownArena";
             debugHotkeyEvents.Add($"  |{arenaName}|+{delta}|{actionName} ({keyCode})");

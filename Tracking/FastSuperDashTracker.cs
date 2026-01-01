@@ -20,7 +20,7 @@ namespace ReplayLogger
         private long lastSpeedLogTime;
         private string lastLoggedSpeedValue;
         private string lastLoggedSpeedInGameValue;
-        private const int SpeedMultiplierThrottleMs = 400;
+        private const int SpeedMultiplierThrottleMs = 1000;
 
         private Type moduleManagerType;
         private bool moduleManagerResolved;

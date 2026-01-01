@@ -23,7 +23,7 @@ namespace ReplayLogger
         private string lastLoggedRotationDelayInGame;
         private string lastLoggedRotationSpeed;
         private string lastLoggedRotationAnglesInGame;
-        private const int SliderThrottleMs = 400;
+        private const int SliderThrottleMs = 1000;
 
         private Type dreamshieldType;
         private bool dreamshieldResolved;
@@ -36,6 +36,10 @@ namespace ReplayLogger
 
         private PlayMakerFSM dreamshieldControlFsm;
         private int dreamshieldControlFsmId;
+        private Rotate cachedRotateAction;
+        private int cachedRotateActionFsmId;
+        private long lastFsmSearchTime;
+        private const int FsmSearchThrottleMs = 1000;
 
         public bool HasData => hasInitialState || changes.Count > 0;
 
@@ -50,6 +54,9 @@ namespace ReplayLogger
             changes.Clear();
             dreamshieldControlFsm = null;
             dreamshieldControlFsmId = 0;
+            cachedRotateAction = null;
+            cachedRotateActionFsmId = 0;
+            lastFsmSearchTime = 0;
             lastSliderLogTime = 0;
             lastLoggedRotationDelay = null;
             lastLoggedRotationDelayInGame = null;
@@ -63,6 +70,9 @@ namespace ReplayLogger
             currentBaseUnixTime = baseUnixTime;
             dreamshieldControlFsm = null;
             dreamshieldControlFsmId = 0;
+            cachedRotateAction = null;
+            cachedRotateActionFsmId = 0;
+            lastFsmSearchTime = 0;
 
             Dictionary<string, string> snapshot = BuildSnapshot();
 
@@ -348,22 +358,26 @@ namespace ReplayLogger
                 return false;
             }
 
+            if (cachedRotateAction != null && cachedRotateActionFsmId == fsm.GetInstanceID())
+            {
+                if (TryReadRotationAngles(cachedRotateAction, out angles))
+                {
+                    return true;
+                }
+
+                cachedRotateAction = null;
+                cachedRotateActionFsmId = 0;
+            }
+
             Rotate rotate = FindRotateAction(fsm);
             if (rotate == null)
             {
                 return false;
             }
 
-            float xAngle = GetRotateFloat(rotate, "xAngle");
-            float yAngle = GetRotateFloat(rotate, "yAngle");
-            float zAngle = GetRotateFloat(rotate, "zAngle");
-            angles = string.Format(
-                CultureInfo.InvariantCulture,
-                "x={0:0.##}, y={1:0.##}, z={2:0.##}",
-                xAngle,
-                yAngle,
-                zAngle);
-            return true;
+            cachedRotateAction = rotate;
+            cachedRotateActionFsmId = fsm.GetInstanceID();
+            return TryReadRotationAngles(rotate, out angles);
         }
 
         private Rotate FindRotateAction(PlayMakerFSM fsm)
@@ -396,6 +410,26 @@ namespace ReplayLogger
             return null;
         }
 
+        private static bool TryReadRotationAngles(Rotate rotate, out string angles)
+        {
+            angles = null;
+            if (rotate == null)
+            {
+                return false;
+            }
+
+            float xAngle = GetRotateFloat(rotate, "xAngle");
+            float yAngle = GetRotateFloat(rotate, "yAngle");
+            float zAngle = GetRotateFloat(rotate, "zAngle");
+            angles = string.Format(
+                CultureInfo.InvariantCulture,
+                "x={0:0.##}, y={1:0.##}, z={2:0.##}",
+                xAngle,
+                yAngle,
+                zAngle);
+            return true;
+        }
+
         private bool TryGetDreamshieldControlFsm(out PlayMakerFSM fsm)
         {
             fsm = dreamshieldControlFsm;
@@ -403,6 +437,14 @@ namespace ReplayLogger
             {
                 return true;
             }
+
+            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            if (lastFsmSearchTime > 0 && now - lastFsmSearchTime < FsmSearchThrottleMs)
+            {
+                return false;
+            }
+
+            lastFsmSearchTime = now;
 
             PlayMakerFSM best = FindDreamshieldFsm(currentArenaName);
             if (best == null && !string.IsNullOrEmpty(currentArenaName))
@@ -420,6 +462,8 @@ namespace ReplayLogger
             if (dreamshieldControlFsmId != instanceId)
             {
                 dreamshieldControlFsmId = instanceId;
+                cachedRotateAction = null;
+                cachedRotateActionFsmId = 0;
             }
 
             fsm = best;

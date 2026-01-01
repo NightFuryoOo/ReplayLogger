@@ -23,7 +23,7 @@ namespace ReplayLogger
             private readonly HashSet<string> pendingInitialKeys = new(StringComparer.Ordinal);
             private const int InitialFillWindowMs = 2000;
             private long lastUpdateTime;
-            private const int UpdateThrottleMs = 750;
+            private const int UpdateThrottleMs = 1000;
 
             private Type moduleManagerType;
             private bool moduleManagerResolved;
@@ -71,6 +71,9 @@ namespace ReplayLogger
             private PlayMakerFSM collectorPhaseControlFsm;
             private int collectorPhaseControlFsmId;
             private IntCompare collectorPhase2ThresholdCompare;
+            private long lastControlFsmSearchTime;
+            private long lastPhaseFsmSearchTime;
+            private const int FsmSearchThrottleMs = 1000;
 
             public bool HasData => hasInitialState || changes.Count > 0;
 
@@ -86,6 +89,8 @@ namespace ReplayLogger
                 changes.Clear();
                 pendingInitialKeys.Clear();
                 lastUpdateTime = 0;
+                lastControlFsmSearchTime = 0;
+                lastPhaseFsmSearchTime = 0;
             }
 
             public void StartFight(string arenaName, long baseUnixTime)
@@ -100,6 +105,8 @@ namespace ReplayLogger
                 collectorPhaseControlFsm = null;
                 collectorPhaseControlFsmId = 0;
                 collectorPhase2ThresholdCompare = null;
+                lastControlFsmSearchTime = 0;
+                lastPhaseFsmSearchTime = 0;
                 lastUpdateTime = 0;
 
                 Dictionary<string, string> snapshot = BuildSnapshot();
@@ -1076,6 +1083,14 @@ namespace ReplayLogger
                     return true;
                 }
 
+                long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                if (lastControlFsmSearchTime > 0 && now - lastControlFsmSearchTime < FsmSearchThrottleMs)
+                {
+                    return false;
+                }
+
+                lastControlFsmSearchTime = now;
+
                 PlayMakerFSM best = FindCollectorFsm("Control", currentArenaName);
                 if (best == null && !string.IsNullOrEmpty(currentArenaName))
                 {
@@ -1108,6 +1123,14 @@ namespace ReplayLogger
                 {
                     return true;
                 }
+
+                long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                if (lastPhaseFsmSearchTime > 0 && now - lastPhaseFsmSearchTime < FsmSearchThrottleMs)
+                {
+                    return false;
+                }
+
+                lastPhaseFsmSearchTime = now;
 
                 PlayMakerFSM best = FindCollectorFsm("Phase Control", currentArenaName);
                 if (best == null && !string.IsNullOrEmpty(currentArenaName))

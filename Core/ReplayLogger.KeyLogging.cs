@@ -31,42 +31,78 @@ namespace ReplayLogger
             DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.Now.ToUnixTimeMilliseconds() - startUnixTime);
             customCanvas?.UpdateTime(dateTimeOffset.ToString("HH:mm:ss"));
 
-            foreach (KeyCode keyCode in Enum.GetValues(typeof(KeyCode)))
+            bool anyKeyDown = Input.anyKeyDown;
+            if (anyKeyDown)
             {
-                if (Input.GetKeyDown(keyCode) || Input.GetKeyUp(keyCode))
+                foreach (KeyCode keyCode in AllKeyCodes)
                 {
-                    string keyStatus = Input.GetKeyDown(keyCode) ? "+" : "-";
-
-                    long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-
-                    float fps = Time.unscaledDeltaTime == 0 ? lastFps : 1f / Time.unscaledDeltaTime;
-                    lastFps = fps;
-                    customCanvas?.UpdateWatermark(keyCode);
-                    int watermarkNumber = customCanvas?.numberInCanvas?.Number ?? 0;
-                    Color watermarkColorStruct = (customCanvas != null && customCanvas.numberInCanvas != null)
-                        ? customCanvas.numberInCanvas.Color
-                        : Color.white;
-                    string watermarkColor = ColorUtility.ToHtmlStringRGBA(watermarkColorStruct);
-                    string formattedKey = JoystickKeyMapper.FormatKey(keyCode);
-                    string logEntry = $"+{unixTime - lastUnixTime}|{formattedKey}|{keyStatus}|{watermarkNumber}|#{watermarkColor}|{fps.ToString("F0")}|";
-                    try
+                    bool isDown = Input.GetKeyDown(keyCode);
+                    bool isUp = Input.GetKeyUp(keyCode);
+                    if (!isDown && !isUp)
                     {
-                        keyLogBuffer.Add(logEntry);
-                    }
-                    catch (Exception e)
-                    {
-                        Modding.Logger.LogError("Key log write failed: " + e.Message);
+                        continue;
                     }
 
-                    if (keyStatus == "+")
+                    if (isDown)
                     {
-                        string arenaForHotkey = lastScene;
-                        debugHotkeysTracker.TrackActivation(keyCode, arenaForHotkey, lastUnixTime, unixTime);
+                        pressedKeys.Add(keyCode);
                     }
+                    else if (isUp)
+                    {
+                        pressedKeys.Remove(keyCode);
+                    }
+
+                    HandleKeyEvent(keyCode, isDown);
+                }
+            }
+            else if (pressedKeys.Count > 0)
+            {
+                pressedKeysBuffer.Clear();
+                foreach (KeyCode keyCode in pressedKeys)
+                {
+                    pressedKeysBuffer.Add(keyCode);
+                }
+
+                foreach (KeyCode keyCode in pressedKeysBuffer)
+                {
+                    if (!Input.GetKeyUp(keyCode))
+                    {
+                        continue;
+                    }
+
+                    pressedKeys.Remove(keyCode);
+                    HandleKeyEvent(keyCode, isDown: false);
                 }
             }
 
-            FlushKeyLogBufferIfNeeded(DateTimeOffset.Now.ToUnixTimeMilliseconds());
+            
+        }
+
+        private void HandleKeyEvent(KeyCode keyCode, bool isDown)
+        {
+            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            float fps = Time.unscaledDeltaTime == 0 ? lastFps : 1f / Time.unscaledDeltaTime;
+            lastFps = fps;
+            customCanvas?.UpdateWatermark(keyCode);
+            int watermarkNumber = customCanvas?.numberInCanvas?.Number ?? 0;
+            Color watermarkColorStruct = (customCanvas != null && customCanvas.numberInCanvas != null)
+                ? customCanvas.numberInCanvas.Color
+                : Color.white;
+            try
+            {
+                int fpsValue = Mathf.RoundToInt(fps);
+                InlineEventRecorder.RecordKeyEvent(writer, (int)(unixTime - lastUnixTime), keyCode, isDown, watermarkNumber, watermarkColorStruct, fpsValue);
+            }
+            catch (Exception e)
+            {
+                Modding.Logger.LogError("Key log write failed: " + e.Message);
+            }
+
+            if (isDown)
+            {
+                string arenaForHotkey = lastScene;
+                debugHotkeysTracker.TrackActivation(keyCode, arenaForHotkey, lastUnixTime, unixTime);
+            }
         }
 
         private void FlushWarningsIfNeeded(BufferedLogSection buffer, IReadOnlyList<string> warnings, Action clearAction)

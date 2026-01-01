@@ -104,7 +104,7 @@ namespace ReplayLogger
             inlineEvents.Add(entry);
             if (writer != null)
             {
-                LogWrite.EncryptedLine(writer, entry);
+                InlineEventRecorder.RecordLine(writer, entry);
             }
         }
 
