@@ -15,9 +15,9 @@
     <Product>ReplayLogger</Product>
     <Description>A Hollow Knight Mod</Description>
     <Copyright>Copyright ©  2025</Copyright>
-    <AssemblyVersion>1.0.1.4</AssemblyVersion>
-    <FileVersion>1.0.1.4</FileVersion>
-    <Version>1.0.1.4</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Version>1.1.0.0</Version>
     <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
     <OutputPath>bin\$(Configuration)\net472\</OutputPath>
     <LangVersion>latest</LangVersion>

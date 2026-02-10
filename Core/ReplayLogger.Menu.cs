@@ -18,6 +18,8 @@ namespace ReplayLogger
         public int ShowLastSavedLogKeyCode = (int)KeyCode.None;
         public int CopyLastSavedLogKeyCode = (int)KeyCode.L;
         public int OpenReplayLoggerFolderKeyCode = (int)KeyCode.F7;
+        public int ManualLogKeyCode = (int)KeyCode.None;
+        public bool ManualModeEnabled = false;
         public float HudToastSeconds = DefaultToastSeconds;
         public string CopyLogsRootPath = string.Empty;
     }
@@ -40,13 +42,17 @@ namespace ReplayLogger
         private static MenuButton copyLastSavedLogButton;
         private static MenuButton openReplayLoggerFolderButton;
         private static MenuButton copyLogsPathButton;
+        private static MenuButton manualModeButton;
+        private static MenuButton manualLogKeyButton;
         private static bool waitingForShowLastSavedLogRebind;
         private static bool waitingForCopyLastSavedLogRebind;
         private static bool waitingForOpenReplayLoggerFolderRebind;
+        private static bool waitingForManualLogRebind;
         private static bool waitingForCopyLogsPathInput;
         private static KeyCode previousShowLastSavedLogKey;
         private static KeyCode previousCopyLastSavedLogKey;
         private static KeyCode previousOpenReplayLoggerFolderKey;
+        private static KeyCode previousManualLogKey;
         private static string previousCopyLogsRootPath;
         private static string copyLogsPathBuffer;
         private static RebindListener listener;
@@ -55,6 +61,7 @@ namespace ReplayLogger
             waitingForShowLastSavedLogRebind
             || waitingForCopyLastSavedLogRebind
             || waitingForOpenReplayLoggerFolderRebind
+            || waitingForManualLogRebind
             || waitingForCopyLogsPathInput;
 
         internal static KeyCode GetShowLastSavedLogKey()
@@ -73,6 +80,18 @@ namespace ReplayLogger
         {
             EnsureSettings();
             return (KeyCode)Settings.OpenReplayLoggerFolderKeyCode;
+        }
+
+        internal static KeyCode GetManualLogKey()
+        {
+            EnsureSettings();
+            return (KeyCode)Settings.ManualLogKeyCode;
+        }
+
+        internal static bool IsManualModeEnabled()
+        {
+            EnsureSettings();
+            return Settings.ManualModeEnabled;
         }
 
         internal static string GetCopyLogsRootPath()
@@ -119,6 +138,8 @@ namespace ReplayLogger
 
             List<Element> elements = new()
             {
+                ManualModeToggleButton(),
+                ManualLogBindButton(),
                 OpenReplayLoggerFolderBindButton(),
                 CopyLastSavedLogBindButton(),
                 CopyLogsPathButton(),
@@ -164,6 +185,11 @@ namespace ReplayLogger
             if (!Enum.IsDefined(typeof(KeyCode), Settings.OpenReplayLoggerFolderKeyCode))
             {
                 Settings.OpenReplayLoggerFolderKeyCode = (int)KeyCode.None;
+            }
+
+            if (!Enum.IsDefined(typeof(KeyCode), Settings.ManualLogKeyCode))
+            {
+                Settings.ManualLogKeyCode = (int)KeyCode.None;
             }
 
             if (Settings.CopyLogsRootPath == null)
@@ -220,6 +246,22 @@ namespace ReplayLogger
                 false
             );
 
+        private static MenuButton ManualModeToggleButton() =>
+            manualModeButton = new MenuButton(
+                FormatToggleButtonName("Manual logging mode", Settings.ManualModeEnabled),
+                "Toggle manual logging (auto logging is disabled while on).",
+                _ => ToggleManualMode(),
+                false
+            );
+
+        private static MenuButton ManualLogBindButton() =>
+            manualLogKeyButton = new MenuButton(
+                FormatButtonName("Manual log hotkey", GetManualLogKey()),
+                "Press to pick a key (Esc cancels, same key clears).",
+                _ => StartManualLogRebind(),
+                false
+            );
+
         private static void StartShowLastSavedLogRebind()
         {
             if (IsRebindInProgress)
@@ -254,6 +296,18 @@ namespace ReplayLogger
             waitingForOpenReplayLoggerFolderRebind = true;
             previousOpenReplayLoggerFolderKey = GetOpenReplayLoggerFolderKey();
             UpdateOpenReplayLoggerFolderButton(SetKeyLabel);
+        }
+
+        private static void StartManualLogRebind()
+        {
+            if (IsRebindInProgress)
+            {
+                return;
+            }
+
+            waitingForManualLogRebind = true;
+            previousManualLogKey = GetManualLogKey();
+            UpdateManualLogButton(SetKeyLabel);
         }
 
         private static void StartCopyLogsPathInput()
@@ -349,6 +403,34 @@ namespace ReplayLogger
                 Settings.OpenReplayLoggerFolderKeyCode = (int)(key == previousOpenReplayLoggerFolderKey ? KeyCode.None : key);
                 waitingForOpenReplayLoggerFolderRebind = false;
                 UpdateOpenReplayLoggerFolderButton(FormatKeyLabel(GetOpenReplayLoggerFolderKey()));
+                return;
+            }
+        }
+
+        private static void HandleManualLogRebind()
+        {
+            if (!waitingForManualLogRebind)
+            {
+                return;
+            }
+
+            foreach (KeyCode key in AllKeyCodes)
+            {
+                if (!Input.GetKeyDown(key))
+                {
+                    continue;
+                }
+
+                if (key == KeyCode.Escape)
+                {
+                    waitingForManualLogRebind = false;
+                    UpdateManualLogButton(FormatKeyLabel(GetManualLogKey()));
+                    return;
+                }
+
+                Settings.ManualLogKeyCode = (int)(key == previousManualLogKey ? KeyCode.None : key);
+                waitingForManualLogRebind = false;
+                UpdateManualLogButton(FormatKeyLabel(GetManualLogKey()));
                 return;
             }
         }
@@ -467,6 +549,54 @@ namespace ReplayLogger
             openReplayLoggerFolderButton.Update();
         }
 
+        private static void UpdateManualLogButton(string value)
+        {
+            if (manualLogKeyButton == null)
+            {
+                return;
+            }
+
+            manualLogKeyButton.Name = FormatButtonName("Manual log hotkey", value);
+            manualLogKeyButton.Update();
+        }
+
+        private static void ToggleManualMode()
+        {
+            bool enabling = !Settings.ManualModeEnabled;
+            ReplayLogger instance = ReplayLogger.Instance;
+            if (instance != null)
+            {
+                if (enabling)
+                {
+                    if (instance.isPlayChalange && !instance.isManualLogging)
+                    {
+                        instance.Close();
+                    }
+                }
+                else
+                {
+                    if (instance.isManualLogging)
+                    {
+                        instance.StopManualLoggingFromMenu();
+                    }
+                }
+            }
+
+            Settings.ManualModeEnabled = enabling;
+            UpdateManualModeButton();
+        }
+
+        private static void UpdateManualModeButton()
+        {
+            if (manualModeButton == null)
+            {
+                return;
+            }
+
+            manualModeButton.Name = FormatToggleButtonName("Manual logging mode", Settings.ManualModeEnabled);
+            manualModeButton.Update();
+        }
+
         private static void UpdateCopyLogsPathButton(string value)
         {
             if (copyLogsPathButton == null)
@@ -481,6 +611,8 @@ namespace ReplayLogger
         private static string FormatButtonName(string title, string value) => $"{title}: {value}";
 
         private static string FormatButtonName(string title, KeyCode key) => $"{title}: {FormatKeyLabel(key)}";
+
+        private static string FormatToggleButtonName(string title, bool value) => $"{title}: {(value ? "On" : "Off")}";
 
         private static string FormatKeyLabel(KeyCode key) =>
             key == KeyCode.None ? NotSetLabel : key.ToString();
@@ -574,6 +706,7 @@ namespace ReplayLogger
                 HandleShowLastSavedLogRebind();
                 HandleCopyLastSavedLogRebind();
                 HandleOpenReplayLoggerFolderRebind();
+                HandleManualLogRebind();
                 HandleCopyLogsPathInput();
             }
         }

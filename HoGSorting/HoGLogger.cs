@@ -147,6 +147,13 @@ namespace ReplayLogger
             string targetScene = self.TargetSceneName ?? string.Empty;
             string previousScene = lastSceneName;
 
+            if (ReplayLogger.IsManualModeEnabled())
+            {
+                lastSceneName = targetScene;
+                orig(self);
+                return;
+            }
+
             if (!isLogging && HoGLoggerConditions.ShouldStartLogging(previousScene, targetScene))
             {
                 lastSceneBeforeArena = previousScene;

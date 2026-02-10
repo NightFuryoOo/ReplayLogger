@@ -23,6 +23,7 @@ namespace ReplayLogger
         public TextMeshProUGUI prefabNumberInCanvas;
         public TextMeshProUGUI timeInCanvas;
         public TextMeshProUGUI savedFileToast;
+        public TextMeshProUGUI manualStatusText;
         public Image flagSpriteInCanvas;
 
         public static Sprite flagSpriteTrue;
@@ -30,6 +31,11 @@ namespace ReplayLogger
 
 
         private GameObject _canvas;
+        private bool hudHiddenByToast;
+        private bool savedNumberActive;
+        private bool savedTimeActive;
+        private int toastToken;
+        public bool HasCanvas => _canvas != null;
 
         public CustomCanvas(NumberInCanvas number, LoadingSprite loadingSprite)
         {
@@ -66,6 +72,10 @@ namespace ReplayLogger
             savedFileToast = CreateWatermarkTopRight(_canvas, new Vector2(-10f, -10f), new Vector2(520f, 50f));
             savedFileToast.gameObject.SetActive(false);
 
+            manualStatusText = CreateWatermarkTopRight(_canvas, new Vector2(-10f, -60f), new Vector2(520f, 40f));
+            manualStatusText.text = "Currently Not Logging";
+            manualStatusText.color = Color.red;
+            manualStatusText.gameObject.SetActive(false);
 
             _canvas.SetActive(true);
             flagSpriteInCanvas.gameObject.SetActive(false);
@@ -87,6 +97,9 @@ namespace ReplayLogger
 
             if (savedFileToast != null) Object.Destroy(savedFileToast);
             savedFileToast = null;
+
+            if (manualStatusText != null) Object.Destroy(manualStatusText);
+            manualStatusText = null;
         }
 
         public void DestroyCanvasDelayed(float seconds)
@@ -233,17 +246,67 @@ namespace ReplayLogger
                 return;
             }
 
+            toastToken++;
+            int token = toastToken;
+
+            if (!hudHiddenByToast)
+            {
+                savedNumberActive = prefabNumberInCanvas != null && prefabNumberInCanvas.gameObject.activeSelf;
+                savedTimeActive = timeInCanvas != null && timeInCanvas.gameObject.activeSelf;
+                hudHiddenByToast = true;
+            }
+
+            if (prefabNumberInCanvas != null)
+            {
+                prefabNumberInCanvas.gameObject.SetActive(false);
+            }
+
+            if (timeInCanvas != null)
+            {
+                timeInCanvas.gameObject.SetActive(false);
+            }
+
             savedFileToast.text = fileName;
             savedFileToast.gameObject.SetActive(true);
-            _canvas.GetComponent<MonoBehaviour>()?.StartCoroutine(HideToastAfterDelay(seconds));
+            _canvas.GetComponent<MonoBehaviour>()?.StartCoroutine(HideToastAfterDelay(seconds, token));
         }
 
-        private IEnumerator HideToastAfterDelay(float seconds)
+        public void ShowManualStatus(bool show)
+        {
+            if (_canvas == null || manualStatusText == null)
+            {
+                return;
+            }
+
+            manualStatusText.gameObject.SetActive(show);
+        }
+
+        private IEnumerator HideToastAfterDelay(float seconds, int token)
         {
             yield return new WaitForSecondsRealtime(seconds);
+            if (token != toastToken)
+            {
+                yield break;
+            }
+
             if (savedFileToast != null)
             {
                 savedFileToast.gameObject.SetActive(false);
+            }
+
+            if (hudHiddenByToast)
+            {
+                if (prefabNumberInCanvas != null)
+                {
+                    prefabNumberInCanvas.gameObject.SetActive(savedNumberActive);
+                }
+
+                if (timeInCanvas != null)
+                {
+                    timeInCanvas.gameObject.SetActive(savedTimeActive);
+                }
+
+                hudHiddenByToast = false;
             }
         }
 

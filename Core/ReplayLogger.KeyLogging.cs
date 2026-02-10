@@ -11,13 +11,16 @@ namespace ReplayLogger
         private void CheckPressedKey(On.GameManager.orig_Update orig, GameManager self)
         {
             orig(self);
+            HandleManualLoggingHotkey();
+            UpdateManualStatus();
             if (!isPlayChalange)
             {
                 return;
             }
 
+            UpdateManualRoomTransition();
             MonitorDebugModUi();
-            if (GameManager.instance.gameState == GlobalEnums.GameState.CUTSCENE && lastScene == "GG_Radiance")
+            if (!isManualLogging && GameManager.instance.gameState == GlobalEnums.GameState.CUTSCENE && lastScene == "GG_Radiance")
             {
                 Close();
             }

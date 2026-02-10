@@ -12,6 +12,7 @@ namespace ReplayLogger
         private readonly CarefreeMelodyResetTracker carefreeMelodyReset = new();
         private readonly BossChallengeSettingsTracker bossChallengeSettings = new();
         private readonly ZoteHelperSettingsTracker zoteHelperSettings = new();
+        private readonly GearSwitcherSettingsTracker gearSwitcherSettings = new();
         private long lastUpdateTime;
         private const int UpdateThrottleMs = 1000;
 
@@ -23,6 +24,7 @@ namespace ReplayLogger
             carefreeMelodyReset.Reset();
             bossChallengeSettings.Reset();
             zoteHelperSettings.Reset();
+            gearSwitcherSettings.Reset();
             lastUpdateTime = 0;
         }
 
@@ -34,6 +36,7 @@ namespace ReplayLogger
             carefreeMelodyReset.StartFight(arenaName, baseUnixTime);
             bossChallengeSettings.StartFight(arenaName, baseUnixTime);
             zoteHelperSettings.StartFight(arenaName, baseUnixTime);
+            gearSwitcherSettings.StartFight(arenaName, baseUnixTime);
             lastUpdateTime = 0;
         }
 
@@ -52,6 +55,7 @@ namespace ReplayLogger
             carefreeMelodyReset.Update(arenaName);
             bossChallengeSettings.Update(arenaName);
             zoteHelperSettings.Update(arenaName);
+            gearSwitcherSettings.Update(arenaName);
         }
 
         public void WriteSection(StreamWriter writer, string separator = "---------------------------------------------------")
@@ -61,7 +65,7 @@ namespace ReplayLogger
                 return;
             }
 
-            if (!collectorPhases.HasData && !fastSuperDash.HasData && !dreamshieldSettings.HasData && !carefreeMelodyReset.HasData && !bossChallengeSettings.HasData && !zoteHelperSettings.HasData)
+            if (!collectorPhases.HasData && !fastSuperDash.HasData && !dreamshieldSettings.HasData && !carefreeMelodyReset.HasData && !bossChallengeSettings.HasData && !zoteHelperSettings.HasData && !gearSwitcherSettings.HasData)
             {
                 return;
             }
@@ -123,6 +127,16 @@ namespace ReplayLogger
                     LogWrite.EncryptedLine(writer, blockSeparator);
                 }
                 zoteHelperSettings.WriteSection(writer);
+                blocksWritten++;
+            }
+
+            if (gearSwitcherSettings.HasData)
+            {
+                if (blocksWritten > 0)
+                {
+                    LogWrite.EncryptedLine(writer, blockSeparator);
+                }
+                gearSwitcherSettings.WriteSection(writer);
                 blocksWritten++;
             }
 

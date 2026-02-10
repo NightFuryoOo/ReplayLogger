@@ -36,6 +36,7 @@ namespace ReplayLogger
         private long startUnixTime;
 
         private bool isPlayChalange = false;
+        private int currentPantheonNumber;
         private int bossCounter;
 
         private const int BlockSizeBytes = 64 * 1024;
@@ -68,6 +69,7 @@ namespace ReplayLogger
         private static Hook debugKillAllHook;
         private static Hook debugKillSelfHook;
         private bool damageSectionStarted;
+        private bool skipPantheonLogging;
 
         public ReplayLogger() : base(ModInfo.Name) { }
         public override string GetVersion() => ModInfo.Version;
@@ -88,6 +90,7 @@ namespace ReplayLogger
             ModHooks.AfterSavegameLoadHook += OnAfterSavegameLoad;
 
             On.BossSequenceController.FinishLastBossScene += BossSequenceController_FinishLastBossScene;
+            On.BossSequenceController.SetupNewSequence += BossSequenceController_SetupNewSequence;
 
             dllDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             modsDir = new DirectoryInfo(dllDir).Parent.FullName;
@@ -119,6 +122,68 @@ namespace ReplayLogger
         {
             isChallengeCompleted = "+";
             orig(self);
+        }
+
+        private void BossSequenceController_SetupNewSequence(
+            On.BossSequenceController.orig_SetupNewSequence orig,
+            BossSequence sequence,
+            BossSequenceController.ChallengeBindings bindings,
+            string playerData
+        )
+        {
+            orig(sequence, bindings, playerData);
+            currentPantheonNumber = DeterminePantheonNumber(sequence);
+        }
+
+        private static int DeterminePantheonNumber(BossSequence sequence)
+        {
+            if (sequence == null)
+            {
+                return 0;
+            }
+
+            try
+            {
+                FieldInfo bossScenesField = typeof(BossSequence).GetField("bossScenes", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (bossScenesField?.GetValue(sequence) is not BossScene[] bossScenes || bossScenes.Length == 0)
+                {
+                    return 0;
+                }
+
+                HashSet<string> names = new(bossScenes.Select(scene => scene.sceneName), StringComparer.OrdinalIgnoreCase);
+                if (names.Contains("GG_Wyrm")
+                    || names.Contains("GG_Radiance")
+                    || names.Contains("GG_Engine_Root")
+                    || names.Contains("GG_Grimm_Nightmare"))
+                {
+                    return 5;
+                }
+
+                if (names.Contains("GG_Engine_Prime") || names.Contains("GG_Hollow_Knight"))
+                {
+                    return 4;
+                }
+
+                if (names.Contains("GG_Sly"))
+                {
+                    return 3;
+                }
+
+                if (names.Contains("GG_Painter"))
+                {
+                    return 2;
+                }
+
+                if (names.Contains("GG_Nailmasters"))
+                {
+                    return 1;
+                }
+            }
+            catch
+            {
+            }
+
+            return 0;
         }
 
 
@@ -497,7 +562,11 @@ namespace ReplayLogger
 
         private IEnumerator QuitToMenu_Start(On.QuitToMenu.orig_Start orig, QuitToMenu self)
         {
-            Close();
+            skipPantheonLogging = false;
+            if (!isManualLogging)
+            {
+                Close();
+            }
             return orig(self);
         }
 
@@ -511,6 +580,28 @@ namespace ReplayLogger
         {
             try
             {
+                if (IsManualModeEnabled())
+                {
+                    lastScene = self.TargetSceneName;
+                    orig(self);
+                    return;
+                }
+
+                if (skipPantheonLogging)
+                {
+                    if (self.TargetSceneName.Contains("GG_End_Seq")
+                        || self.TargetSceneName == "GG_Atrium"
+                        || self.TargetSceneName == "GG_Workshop")
+                    {
+                        skipPantheonLogging = false;
+                        currentPantheonNumber = 0;
+                    }
+
+                    lastScene = self.TargetSceneName;
+                    orig(self);
+                    return;
+                }
+
                 bool isEnding = isPlayChalange && self.TargetSceneName.Contains("GG_End_Seq");
                 if (isPlayChalange && writer != null)
                 {
@@ -528,6 +619,19 @@ namespace ReplayLogger
 
                 if (self.TargetSceneName.Contains("GG_Boss_Door") || (self.TargetSceneName.Contains("GG_Vengefly_V") && lastScene == "GG_Atrium_Roof"))
                 {
+                    int pantheonNumber = currentPantheonNumber;
+                    if (pantheonNumber == 0 && self.TargetSceneName.Contains("GG_Vengefly_V") && lastScene == "GG_Atrium_Roof")
+                    {
+                        pantheonNumber = 5;
+                    }
+
+                    if (pantheonNumber > 0 && GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber))
+                    {
+                        skipPantheonLogging = true;
+                        lastScene = self.TargetSceneName;
+                        orig(self);
+                        return;
+                    }
 
                     startUnixTime = lastUnixTime;
                     int curentPlayTime = (int)(PlayerData.instance.playTime * 100);
@@ -614,6 +718,16 @@ namespace ReplayLogger
                             currentPanteon = ("P3", Panteons.P3.ToList());
                         if (self.TargetSceneName == Panteons.P4[0])
                             currentPanteon = ("P4", Panteons.P4.ToList());
+
+                        int pantheonNumber = GetPantheonNumber(currentPanteon.name);
+                        if (pantheonNumber > 0 && GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber))
+                        {
+                            skipPantheonLogging = true;
+                            AbortPantheonLogging();
+                            lastScene = self.TargetSceneName;
+                            orig(self);
+                            return;
+                        }
                     }
                     else if (currentPanteon.list != null)
                     {
@@ -652,6 +766,92 @@ namespace ReplayLogger
             }
             lastScene = self.TargetSceneName;
             orig(self);
+        }
+
+        private static int GetPantheonNumber(string pantheonName)
+        {
+            if (string.IsNullOrWhiteSpace(pantheonName) || pantheonName.Length < 2 || pantheonName[0] != 'P')
+            {
+                return 0;
+            }
+
+            char digit = pantheonName[1];
+            if (digit < '1' || digit > '5')
+            {
+                return 0;
+            }
+
+            return digit - '0';
+        }
+
+        private void AbortPantheonLogging()
+        {
+            try
+            {
+                writer?.Flush();
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                writer?.Close();
+            }
+            catch
+            {
+            }
+
+            writer = null;
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(currentNameLog) && File.Exists(currentNameLog))
+                {
+                    File.Delete(currentNameLog);
+                }
+            }
+            catch
+            {
+            }
+
+            DamageAnfInv?.Clear();
+            InvWarn?.Clear();
+            speedWarnBuffer?.Clear();
+            hitWarnBuffer?.Clear();
+            DamageAnfInv = null;
+            InvWarn = null;
+            speedWarnBuffer = null;
+            hitWarnBuffer = null;
+
+            AheSettingsManager.Reset();
+            ZoteSettingsManager.Reset();
+            CollectorPhasesSettingsManager.Reset();
+            godhomeQolTracker.Reset();
+            debugHotkeysTracker.Reset();
+            debugMenuTracker.Reset();
+            damageChangeTracker.Reset();
+            flukenestTracker.Reset();
+            hitWarnTracker.Reset();
+
+            keyLogBuffer.Clear();
+            lastKeyLogFlushTime = 0;
+            pressedKeys.Clear();
+            pressedKeysBuffer.Clear();
+            hasHeroBoxState = false;
+            lastHeroBoxActive = -1;
+            heroBoxOffStartTime = -1f;
+            damageSectionStarted = false;
+            DisposeDebugModHooks();
+
+            isChallengeCompleted = "-";
+            bossCounter = 0;
+            startUnixTime = 0;
+            isPlayChalange = false;
+            currentPantheonNumber = 0;
+
+            customCanvas?.DestroyCanvas();
+            currentPanteon = (null, null);
         }
 
         private void FlushBufferedSectionsForTransition()
@@ -710,8 +910,14 @@ namespace ReplayLogger
             return span.ToString(@"hh\:mm\:ss\.fff");
         }
 
-                private void Close()
+        private void Close()
         {
+            Close(isManualLogging);
+        }
+
+        private void Close(bool manualClose)
+        {
+            bool toastShown = false;
             try
             {
                 if (writer == null)
@@ -783,23 +989,29 @@ namespace ReplayLogger
                 writer.Close();
                 writer = null;
 
-                string panteonDir = Path.Combine(dllDir, currentPanteon.name);
-                if (!Directory.Exists(panteonDir))
+                string pantheonName = string.IsNullOrWhiteSpace(currentPanteon.name) ? "Unknown" : currentPanteon.name;
+                string logFolderName = manualClose ? "Manual Logs" : pantheonName;
+                string logDir = Path.Combine(dllDir, logFolderName);
+                if (!Directory.Exists(logDir))
                 {
-                    Directory.CreateDirectory(panteonDir);
+                    Directory.CreateDirectory(logDir);
                 }
 
                 string dataTimeNow = DateTimeOffset.FromUnixTimeMilliseconds(lastUnixTime).ToLocalTime().ToString("dd-MM-yyyy HH-mm-ss");
-                string newPath = Path.Combine(panteonDir, $"{isChallengeCompleted}{currentPanteon.name} ({dataTimeNow}).log");
+                string namePrefix = manualClose
+                    ? (string.IsNullOrWhiteSpace(manualStartScene) ? "Manual" : manualStartScene)
+                    : (string.IsNullOrWhiteSpace(isChallengeCompleted) || isChallengeCompleted == "-" ? pantheonName : $"{isChallengeCompleted}{pantheonName}");
+                string newPath = Path.Combine(logDir, $"{namePrefix} ({dataTimeNow}).log");
 
+                string recordName = manualClose ? namePrefix : pantheonName;
                 if (File.Exists(currentNameLog))
                 {
                     File.Move(currentNameLog, newPath);
-                    string pantheonName = currentPanteon.name ?? "Unknown";
-                    SavedLogTracker.Record(newPath, "Pantheons", pantheonName, "None");
-                    string toastText = $"{pantheonName}: {Path.GetFileName(newPath)}";
+                    SavedLogTracker.Record(newPath, manualClose ? "Manual" : "Pantheons", recordName, "None");
+                    string toastText = $"{namePrefix}: {Path.GetFileName(newPath)}";
                     SavedLogToast.Record(toastText);
-                    customCanvas?.ShowSavedFileToast(toastText, ReplayLogger.GetHudToastSeconds());
+                    SavedLogToast.Show(ReplayLogger.GetHudToastSeconds());
+                    toastShown = true;
                 }
             }
             catch (Exception ex)
@@ -835,7 +1047,19 @@ namespace ReplayLogger
                 bossCounter = 0;
                 startUnixTime = 0;
                 isPlayChalange = false;
-                customCanvas?.DestroyCanvas();
+                isManualLogging = false;
+                manualStartScene = null;
+                manualRoomHeaderWritten = false;
+                manualRoomStartUnixTime = 0;
+                manualHoldStartTime = 0f;
+                if (toastShown || manualClose)
+                {
+                    customCanvas?.DestroyCanvasDelayed(ReplayLogger.GetHudToastSeconds());
+                }
+                else
+                {
+                    customCanvas?.DestroyCanvas();
+                }
                 currentPanteon = (null, null);
             }
         }
