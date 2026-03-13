@@ -36,10 +36,8 @@ namespace ReplayLogger
             FlushWarningsIfNeeded(speedWarnBuffer, speedWarnTracker.Warnings, speedWarnTracker.ClearWarnings);
             FlushWarningsIfNeeded(hitWarnBuffer, hitWarnTracker.Warnings, hitWarnTracker.ClearWarnings);
 
-            // Cache timestamp once per frame instead of calling DateTimeOffset.Now multiple times
             long nowMs = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-            // Only update the time display once per second (it only shows HH:mm:ss)
             long currentSecond = nowMs / 1000;
             if (currentSecond != _lastCanvasUpdateSecond)
             {
@@ -48,7 +46,6 @@ namespace ReplayLogger
                 customCanvas?.UpdateTime(dateTimeOffset.ToString("HH:mm:ss"));
             }
 
-            // First frame: snapshot all currently held keys so releases are tracked
             if (_keyLogFirstFrame)
             {
                 _keyLogFirstFrame = false;
@@ -61,7 +58,6 @@ namespace ReplayLogger
                 }
             }
 
-            // Only scan all KeyCodes when a NEW key is actually pressed
             if (Input.anyKeyDown)
             {
                 foreach (KeyCode keyCode in AllKeyCodes)
@@ -74,7 +70,6 @@ namespace ReplayLogger
                 }
             }
 
-            // Only check releases for keys we KNOW are held (typically 1-5 keys)
             if (_currentlyPressedKeys.Count > 0)
             {
                 _keysToRemove.Clear();

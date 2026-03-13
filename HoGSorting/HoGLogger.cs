@@ -204,7 +204,6 @@ namespace ReplayLogger
                 customCanvas?.UpdateTime(relative.ToString("HH:mm:ss"));
             }
 
-            // First frame: snapshot all currently held keys so releases are tracked
             if (_hogKeyLogFirstFrame)
             {
                 _hogKeyLogFirstFrame = false;
@@ -217,7 +216,6 @@ namespace ReplayLogger
                 }
             }
 
-            // Only scan all KeyCodes when a NEW key is actually pressed
             if (Input.anyKeyDown)
             {
                 foreach (KeyCode keyCode in AllKeyCodes)
@@ -230,7 +228,6 @@ namespace ReplayLogger
                 }
             }
 
-            // Only check releases for keys we KNOW are held (typically 1-5 keys)
             if (pressedKeys.Count > 0)
             {
                 pressedKeysBuffer.Clear();
