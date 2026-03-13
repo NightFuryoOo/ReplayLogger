@@ -8,6 +8,11 @@ namespace ReplayLogger
 {
     public partial class ReplayLogger
     {
+        private readonly HashSet<KeyCode> _currentlyPressedKeys = new HashSet<KeyCode>();
+        private readonly List<KeyCode> _keysToRemove = new List<KeyCode>();
+        private bool _keyLogFirstFrame = true;
+        private long _lastCanvasUpdateSecond = -1;
+
         private void CheckPressedKey(On.GameManager.orig_Update orig, GameManager self)
         {
             orig(self);
@@ -31,36 +36,68 @@ namespace ReplayLogger
             FlushWarningsIfNeeded(speedWarnBuffer, speedWarnTracker.Warnings, speedWarnTracker.ClearWarnings);
             FlushWarningsIfNeeded(hitWarnBuffer, hitWarnTracker.Warnings, hitWarnTracker.ClearWarnings);
 
-            DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.Now.ToUnixTimeMilliseconds() - startUnixTime);
-            customCanvas?.UpdateTime(dateTimeOffset.ToString("HH:mm:ss"));
+            // Cache timestamp once per frame instead of calling DateTimeOffset.Now multiple times
+            long nowMs = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-            foreach (KeyCode keyCode in AllKeyCodes)
+            // Only update the time display once per second (it only shows HH:mm:ss)
+            long currentSecond = nowMs / 1000;
+            if (currentSecond != _lastCanvasUpdateSecond)
             {
-                bool isDown = Input.GetKeyDown(keyCode);
-                bool isUp = Input.GetKeyUp(keyCode);
+                _lastCanvasUpdateSecond = currentSecond;
+                DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(nowMs - startUnixTime);
+                customCanvas?.UpdateTime(dateTimeOffset.ToString("HH:mm:ss"));
+            }
 
-                if (!isDown && !isUp)
+            // First frame: snapshot all currently held keys so releases are tracked
+            if (_keyLogFirstFrame)
+            {
+                _keyLogFirstFrame = false;
+                foreach (KeyCode keyCode in AllKeyCodes)
                 {
-                    continue;
-                }
-
-                if (isDown)
-                {
-                    HandleKeyEvent(keyCode, isDown: true);
-                }
-                else if (isUp)
-                {
-                    HandleKeyEvent(keyCode, isDown: false);
+                    if (Input.GetKey(keyCode))
+                    {
+                        _currentlyPressedKeys.Add(keyCode);
+                    }
                 }
             }
 
-            FlushKeyLogBufferIfNeeded(DateTimeOffset.Now.ToUnixTimeMilliseconds());
+            // Only scan all KeyCodes when a NEW key is actually pressed
+            if (Input.anyKeyDown)
+            {
+                foreach (KeyCode keyCode in AllKeyCodes)
+                {
+                    if (Input.GetKeyDown(keyCode))
+                    {
+                        _currentlyPressedKeys.Add(keyCode);
+                        HandleKeyEvent(keyCode, isDown: true, nowMs);
+                    }
+                }
+            }
+
+            // Only check releases for keys we KNOW are held (typically 1-5 keys)
+            if (_currentlyPressedKeys.Count > 0)
+            {
+                _keysToRemove.Clear();
+                foreach (KeyCode keyCode in _currentlyPressedKeys)
+                {
+                    if (Input.GetKeyUp(keyCode))
+                    {
+                        HandleKeyEvent(keyCode, isDown: false, nowMs);
+                        _keysToRemove.Add(keyCode);
+                    }
+                }
+                for (int i = 0; i < _keysToRemove.Count; i++)
+                {
+                    _currentlyPressedKeys.Remove(_keysToRemove[i]);
+                }
+            }
+
+            FlushKeyLogBufferIfNeeded(nowMs);
 
         }
 
-        private void HandleKeyEvent(KeyCode keyCode, bool isDown)
+        private void HandleKeyEvent(KeyCode keyCode, bool isDown, long nowMs)
         {
-            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             float fps = Time.unscaledDeltaTime == 0 ? lastFps : 1f / Time.unscaledDeltaTime;
             lastFps = fps;
             customCanvas?.UpdateWatermark(keyCode);
@@ -69,7 +106,7 @@ namespace ReplayLogger
             try
             {
                 int fpsValue = Mathf.RoundToInt(fps);
-                WriteKeyEventLine((int)(unixTime - lastUnixTime), keyCode, isDown, watermarkNumber, watermarkColorStruct, fpsValue);
+                WriteKeyEventLine((int)(nowMs - lastUnixTime), keyCode, isDown, watermarkNumber, watermarkColorStruct, fpsValue);
             }
             catch (Exception e)
             {
@@ -79,7 +116,7 @@ namespace ReplayLogger
             if (isDown)
             {
                 string arenaForHotkey = lastScene;
-                debugHotkeysTracker.TrackActivation(keyCode, arenaForHotkey, lastUnixTime, unixTime);
+                debugHotkeysTracker.TrackActivation(keyCode, arenaForHotkey, lastUnixTime, nowMs);
             }
         }
 

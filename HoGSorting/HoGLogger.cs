@@ -73,6 +73,8 @@ namespace ReplayLogger
         private static readonly KeyCode[] AllKeyCodes = (KeyCode[])Enum.GetValues(typeof(KeyCode));
         private static readonly HashSet<KeyCode> pressedKeys = new();
         private static readonly List<KeyCode> pressedKeysBuffer = new();
+        private static bool _hogKeyLogFirstFrame = true;
+        private static long _lastCanvasUpdateSecond = -1;
         private const float EnemyUpdateIntervalSeconds = 0.1f;
         private static float lastEnemyUpdateTime;
         private static List<string> debugModEvents = new();
@@ -107,6 +109,8 @@ namespace ReplayLogger
         private static bool hasHeroBoxState;
         private static int lastHeroBoxActive;
         private static float heroBoxOffStartTime = -1f;
+        private static HeroController _cachedHeroBoxOwner;
+        private static Transform _cachedHeroBoxTransform;
         [ModuleInitializer]
         internal static void InitializeModule()
         {
@@ -191,26 +195,56 @@ namespace ReplayLogger
             debugMenuTracker.Update(writer, activeArena, lastUnixTime);
             godhomeQolTracker.Update(activeArena);
 
-            DateTimeOffset relative = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.Now.ToUnixTimeMilliseconds() - startUnixTime);
-            customCanvas?.UpdateTime(relative.ToString("HH:mm:ss"));
-
-            foreach (KeyCode keyCode in AllKeyCodes)
+            long nowMs = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long currentSecond = nowMs / 1000;
+            if (currentSecond != _lastCanvasUpdateSecond)
             {
-                bool isDown = Input.GetKeyDown(keyCode);
-                bool isUp = Input.GetKeyUp(keyCode);
+                _lastCanvasUpdateSecond = currentSecond;
+                DateTimeOffset relative = DateTimeOffset.FromUnixTimeMilliseconds(nowMs - startUnixTime);
+                customCanvas?.UpdateTime(relative.ToString("HH:mm:ss"));
+            }
 
-                if (!isDown && !isUp)
+            // First frame: snapshot all currently held keys so releases are tracked
+            if (_hogKeyLogFirstFrame)
+            {
+                _hogKeyLogFirstFrame = false;
+                foreach (KeyCode keyCode in AllKeyCodes)
                 {
-                    continue;
+                    if (Input.GetKey(keyCode))
+                    {
+                        pressedKeys.Add(keyCode);
+                    }
                 }
+            }
 
-                if (isDown)
+            // Only scan all KeyCodes when a NEW key is actually pressed
+            if (Input.anyKeyDown)
+            {
+                foreach (KeyCode keyCode in AllKeyCodes)
                 {
-                    HandleKeyEvent(keyCode, isDown: true);
+                    if (Input.GetKeyDown(keyCode))
+                    {
+                        pressedKeys.Add(keyCode);
+                        HandleKeyEvent(keyCode, isDown: true);
+                    }
                 }
-                else if (isUp)
+            }
+
+            // Only check releases for keys we KNOW are held (typically 1-5 keys)
+            if (pressedKeys.Count > 0)
+            {
+                pressedKeysBuffer.Clear();
+                foreach (KeyCode keyCode in pressedKeys)
                 {
-                    HandleKeyEvent(keyCode, isDown: false);
+                    if (Input.GetKeyUp(keyCode))
+                    {
+                        HandleKeyEvent(keyCode, isDown: false);
+                        pressedKeysBuffer.Add(keyCode);
+                    }
+                }
+                for (int i = 0; i < pressedKeysBuffer.Count; i++)
+                {
+                    pressedKeys.Remove(pressedKeysBuffer[i]);
                 }
             }
 
@@ -738,9 +772,12 @@ namespace ReplayLogger
                     lastKeyLogFlushTime = 0;
                     pressedKeys.Clear();
                     pressedKeysBuffer.Clear();
-                    hasHeroBoxState = false;
+                    _hogKeyLogFirstFrame = true;
+                    _lastCanvasUpdateSecond = -1;
                     lastHeroBoxActive = -1;
                     heroBoxOffStartTime = -1f;
+                    _cachedHeroBoxOwner = null;
+                    _cachedHeroBoxTransform = null;
                     damageChangeTracker.Reset();
                     flukenestTracker.Reset();
                     infoBoss = new();
@@ -900,9 +937,13 @@ namespace ReplayLogger
             lastKeyLogFlushTime = 0;
             pressedKeys.Clear();
             pressedKeysBuffer.Clear();
+            _hogKeyLogFirstFrame = true;
+            _lastCanvasUpdateSecond = -1;
             hasHeroBoxState = false;
             lastHeroBoxActive = -1;
             heroBoxOffStartTime = -1f;
+            _cachedHeroBoxOwner = null;
+            _cachedHeroBoxTransform = null;
             debugHotkeysTracker.Reset();
             debugMenuTracker.Reset();
             godhomeQolTracker.Reset();
@@ -1396,8 +1437,13 @@ namespace ReplayLogger
                 return;
             }
 
-            Transform heroBoxTransform = hero.transform.Find("HeroBox");
-            GameObject heroBoxObject = heroBoxTransform != null ? heroBoxTransform.gameObject : null;
+            if (_cachedHeroBoxOwner != hero || _cachedHeroBoxTransform == null)
+            {
+                _cachedHeroBoxOwner = hero;
+                _cachedHeroBoxTransform = hero.transform.Find("HeroBox");
+            }
+
+            GameObject heroBoxObject = _cachedHeroBoxTransform != null ? _cachedHeroBoxTransform.gameObject : null;
             int heroBoxActive = heroBoxObject != null ? (heroBoxObject.activeInHierarchy ? 1 : 0) : -1;
 
             if (!hasHeroBoxState)
@@ -1497,7 +1543,7 @@ namespace ReplayLogger
                 }
             }
 
-            foreach (HKHealthManager enemyHealthManager in healthManagers.ToList())
+            foreach (HKHealthManager enemyHealthManager in healthManagers)
             {
                 if (enemyHealthManager != null && enemyHealthManager.hp > 0 && !infoBoss.ContainsKey(enemyHealthManager))
                 {

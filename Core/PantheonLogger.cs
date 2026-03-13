@@ -337,6 +337,8 @@ namespace ReplayLogger
         private bool hasHeroBoxState;
         private int lastHeroBoxActive;
         private float heroBoxOffStartTime = -1f;
+        private HeroController _cachedHeroBoxOwner;
+        private Transform _cachedHeroBoxTransform;
 
         public void InvCheck()
         {
@@ -400,8 +402,13 @@ namespace ReplayLogger
                 return;
             }
 
-            Transform heroBoxTransform = hero.transform.Find("HeroBox");
-            GameObject heroBoxObject = heroBoxTransform != null ? heroBoxTransform.gameObject : null;
+            if (_cachedHeroBoxOwner != hero || _cachedHeroBoxTransform == null)
+            {
+                _cachedHeroBoxOwner = hero;
+                _cachedHeroBoxTransform = hero.transform.Find("HeroBox");
+            }
+
+            GameObject heroBoxObject = _cachedHeroBoxTransform != null ? _cachedHeroBoxTransform.gameObject : null;
             int heroBoxActive = heroBoxObject != null ? (heroBoxObject.activeInHierarchy ? 1 : 0) : -1;
 
             if (!hasHeroBoxState)
@@ -513,7 +520,7 @@ namespace ReplayLogger
             if (healthManagers != null || healthManagers.Count > 0)
             {
 
-                foreach (HealthManager healthManager in healthManagers.ToList())
+                foreach (HealthManager healthManager in healthManagers)
                 {
                     if (healthManager != null && healthManager.hp > 0 && !infoBoss.ContainsKey(healthManager))
                     {
@@ -665,6 +672,8 @@ namespace ReplayLogger
                           hasHeroBoxState = false;
                           lastHeroBoxActive = -1;
                           heroBoxOffStartTime = -1f;
+                          _cachedHeroBoxOwner = null;
+                          _cachedHeroBoxTransform = null;
                           damageSectionStarted = false;
                           charmsChangeTracker.Reset();
                         CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
@@ -841,6 +850,8 @@ namespace ReplayLogger
             hasHeroBoxState = false;
             lastHeroBoxActive = -1;
             heroBoxOffStartTime = -1f;
+            _cachedHeroBoxOwner = null;
+            _cachedHeroBoxTransform = null;
             damageSectionStarted = false;
             DisposeDebugModHooks();
 
@@ -1041,6 +1052,8 @@ namespace ReplayLogger
                 hasHeroBoxState = false;
                 lastHeroBoxActive = -1;
                 heroBoxOffStartTime = -1f;
+                _cachedHeroBoxOwner = null;
+                _cachedHeroBoxTransform = null;
                 damageSectionStarted = false;
                 DisposeDebugModHooks();
                 isChallengeCompleted = "-";

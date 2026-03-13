@@ -163,8 +163,9 @@ namespace ReplayLogger
                 debugHotkeysTracker.InitializeBindings();
                 keyLogBuffer.Clear();
                 lastKeyLogFlushTime = 0;
-                pressedKeys.Clear();
-                pressedKeysBuffer.Clear();
+                _currentlyPressedKeys.Clear();
+                _keysToRemove.Clear();
+                _keyLogFirstFrame = true;
                 hasHeroBoxState = false;
                 lastHeroBoxActive = -1;
                 heroBoxOffStartTime = -1f;
