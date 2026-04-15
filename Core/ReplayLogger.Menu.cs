@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Modding;
 using Satchel.BetterMenus;
@@ -33,7 +34,7 @@ namespace ReplayLogger
         private const string DefaultCopyPathLabel = "Default (Desktop\\Save Logs)";
         private const int MaxPathLabelLength = 48;
 
-        private static readonly KeyCode[] AllKeyCodes = (KeyCode[])Enum.GetValues(typeof(KeyCode));
+        private static readonly KeyCode[] AllKeyCodes = Enum.GetValues(typeof(KeyCode)).Cast<KeyCode>().Distinct().ToArray();
         private static readonly HashSet<char> InvalidPathChars = new(Path.GetInvalidPathChars());
 
         internal static ReplayLoggerSettings Settings { get; private set; } = new ReplayLoggerSettings();

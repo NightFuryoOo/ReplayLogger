@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Modding;
@@ -36,9 +36,9 @@ namespace ReplayLogger
         private static FieldInfo noclipField;
         private static FieldInfo keyBindLockField;
 
-        internal static bool TryGetUiVisible(out bool visible)
+        internal static bool TryGetFrameSnapshot(out DebugModFrameSnapshot snapshot)
         {
-            visible = false;
+            snapshot = DebugModFrameSnapshot.Unavailable;
             try
             {
                 if (!EnsureHandles())
@@ -46,13 +46,13 @@ namespace ReplayLogger
                     return false;
                 }
 
-                object settings = settingsProperty.GetValue(null);
+                object settings = settingsProperty.GetCachedValue(null);
                 if (settings == null)
                 {
                     return false;
                 }
 
-                visible =
+                bool uiVisible =
                     GetBool(consoleField, settings) ||
                     GetBool(enemiesField, settings) ||
                     GetBool(helpField, settings) ||
@@ -60,13 +60,37 @@ namespace ReplayLogger
                     GetBool(topMenuField, settings) ||
                     GetBool(saveStateField, settings);
 
+                DebugCheatToggleSnapshot cheatSnapshot = new(
+                    available: true,
+                    infiniteSoul: GetBool(infiniteSoulField, null),
+                    infiniteHp: GetBool(infiniteHpField, null),
+                    noclip: GetBool(noclipField, null),
+                    keyBindLock: GetBool(keyBindLockField, null));
+
+                snapshot = new DebugModFrameSnapshot(
+                    available: true,
+                    uiVisible: uiVisible,
+                    cheatSnapshot: cheatSnapshot);
                 return true;
             }
             catch (Exception ex)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: failed to query DebugMod UI: {ex.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to read DebugMod snapshot: {ex.Message}");
+                snapshot = DebugModFrameSnapshot.Unavailable;
                 return false;
             }
+        }
+
+        internal static bool TryGetUiVisible(out bool visible)
+        {
+            visible = false;
+            if (!TryGetFrameSnapshot(out DebugModFrameSnapshot snapshot))
+            {
+                return false;
+            }
+
+            visible = snapshot.UiVisible;
+            return true;
         }
 
         private static bool EnsureHandles()
@@ -131,7 +155,7 @@ namespace ReplayLogger
 
         private static bool GetBool(FieldInfo field, object instance)
         {
-            return field != null && instance != null && field.GetValue(instance) is bool value && value;
+            return field != null && field.GetCachedValue(instance) is bool value && value;
         }
 
         internal static bool TryGetHotkeyBindings(out IReadOnlyDictionary<string, KeyCode> bindings)
@@ -144,13 +168,13 @@ namespace ReplayLogger
                     return false;
                 }
 
-                object settings = settingsProperty.GetValue(null);
+                object settings = settingsProperty.GetCachedValue(null);
                 if (settings == null)
                 {
                     return false;
                 }
 
-                if (bindsField?.GetValue(settings) is Dictionary<string, KeyCode> dict && dict.Count > 0)
+                if (bindsField?.GetCachedValue(settings) is Dictionary<string, KeyCode> dict && dict.Count > 0)
                 {
                     bindings = new Dictionary<string, KeyCode>(dict, StringComparer.Ordinal);
                     return true;
@@ -158,7 +182,7 @@ namespace ReplayLogger
             }
             catch (Exception ex)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: failed to read DebugMod hotkeys: {ex.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to read DebugMod hotkeys: {ex.Message}");
             }
 
             return false;
@@ -167,28 +191,30 @@ namespace ReplayLogger
         internal static bool TryGetCheatToggleSnapshot(out DebugCheatToggleSnapshot snapshot)
         {
             snapshot = DebugCheatToggleSnapshot.Unavailable;
-            try
+            if (!TryGetFrameSnapshot(out DebugModFrameSnapshot frameSnapshot))
             {
-                if (!EnsureHandles())
-                {
-                    return false;
-                }
-
-                snapshot = new DebugCheatToggleSnapshot(
-                    available: true,
-                    infiniteSoul: GetBool(infiniteSoulField, null),
-                    infiniteHp: GetBool(infiniteHpField, null),
-                    noclip: GetBool(noclipField, null),
-                    keyBindLock: GetBool(keyBindLockField, null));
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Modding.Logger.LogWarn($"ReplayLogger: failed to read DebugMod cheat toggles: {ex.Message}");
-                snapshot = DebugCheatToggleSnapshot.Unavailable;
                 return false;
             }
+
+            snapshot = frameSnapshot.CheatSnapshot;
+            return snapshot.Available;
         }
+    }
+
+    internal readonly struct DebugModFrameSnapshot
+    {
+        public static DebugModFrameSnapshot Unavailable => new(false, false, DebugCheatToggleSnapshot.Unavailable);
+
+        public DebugModFrameSnapshot(bool available, bool uiVisible, DebugCheatToggleSnapshot cheatSnapshot)
+        {
+            Available = available;
+            UiVisible = uiVisible;
+            CheatSnapshot = cheatSnapshot;
+        }
+
+        public bool Available { get; }
+        public bool UiVisible { get; }
+        public DebugCheatToggleSnapshot CheatSnapshot { get; }
     }
 
     internal readonly struct DebugCheatToggleSnapshot
@@ -211,3 +237,6 @@ namespace ReplayLogger
         public bool KeyBindLock { get; }
     }
 }
+
+
+

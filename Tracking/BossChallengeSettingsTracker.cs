@@ -13,8 +13,9 @@ namespace ReplayLogger
         private string initialArenaName;
         private string currentArenaName;
         private long currentBaseUnixTime;
-        private Dictionary<string, string> initialState = new(StringComparer.Ordinal);
-        private Dictionary<string, string> currentState = new(StringComparer.Ordinal);
+        private BossChallengeState initialState;
+        private BossChallengeState currentState;
+        private bool hasCurrentState;
         private readonly List<string> changes = new();
 
         private Type moduleManagerType;
@@ -40,8 +41,9 @@ namespace ReplayLogger
             initialArenaName = null;
             currentArenaName = null;
             currentBaseUnixTime = 0;
-            initialState.Clear();
-            currentState.Clear();
+            initialState = default;
+            currentState = default;
+            hasCurrentState = false;
             changes.Clear();
         }
 
@@ -49,45 +51,37 @@ namespace ReplayLogger
         {
             currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
             currentBaseUnixTime = baseUnixTime;
+            long now = baseUnixTime;
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
+            BossChallengeState snapshot = BuildState();
 
             if (!hasInitialState)
             {
                 hasInitialState = true;
                 initialArenaName = currentArenaName;
-                initialState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                initialState = snapshot;
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            if (currentState.Count == 0)
+            if (!hasCurrentState)
             {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            foreach (var entry in snapshot)
-            {
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            LogFieldChange("Halve Damage [HoG Ascended]", currentState.HalveAscended, snapshot.HalveAscended, now);
+            LogFieldChange("Halve Damage [HoG Attuned]", currentState.HalveAttuned, snapshot.HalveAttuned, now);
+            LogFieldChange("Add Lifeblood", currentState.AddLifeblood, snapshot.AddLifeblood, now);
+            LogFieldChange("Lifeblood Amount", currentState.LifebloodAmount, snapshot.LifebloodAmount, now);
+            LogFieldChange("Add Soul", currentState.AddSoul, snapshot.AddSoul, now);
+            LogFieldChange("Soul Amount", currentState.SoulAmount, snapshot.SoulAmount, now);
+            currentState = snapshot;
         }
 
-        public void Update(string arenaName)
+        public void Update(string arenaName, long nowUnixTime)
         {
             if (!hasInitialState)
             {
@@ -100,36 +94,23 @@ namespace ReplayLogger
                 return;
             }
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
-            if (snapshot.Count == 0)
+            BossChallengeState snapshot = BuildState();
+
+            if (!hasCurrentState)
             {
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            if (currentState.Count == 0)
-            {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                return;
-            }
-
-            foreach (var entry in snapshot)
-            {
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            long now = nowUnixTime;
+            LogFieldChange("Halve Damage [HoG Ascended]", currentState.HalveAscended, snapshot.HalveAscended, now);
+            LogFieldChange("Halve Damage [HoG Attuned]", currentState.HalveAttuned, snapshot.HalveAttuned, now);
+            LogFieldChange("Add Lifeblood", currentState.AddLifeblood, snapshot.AddLifeblood, now);
+            LogFieldChange("Lifeblood Amount", currentState.LifebloodAmount, snapshot.LifebloodAmount, now);
+            LogFieldChange("Add Soul", currentState.AddSoul, snapshot.AddSoul, now);
+            LogFieldChange("Soul Amount", currentState.SoulAmount, snapshot.SoulAmount, now);
+            currentState = snapshot;
         }
 
         public void WriteSection(StreamWriter writer)
@@ -144,61 +125,80 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "  Boss Challenge Settings:");
-            if (!string.IsNullOrEmpty(initialArenaName))
+            List<string> batch = TempObjectPools.RentStringList(changes.Count + 10);
+            try
             {
-                LogWrite.EncryptedLine(writer, $"    Initial Arena: {initialArenaName}");
-            }
-            LogWrite.EncryptedLine(writer, "    State:");
-
-            if (initialState.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (unavailable)");
-            }
-            else
-            {
-                foreach (var entry in initialState)
+                batch.Add("  Boss Challenge Settings:");
+                if (!string.IsNullOrEmpty(initialArenaName))
                 {
-                    LogWrite.EncryptedLine(writer, $"      {entry.Key}: {entry.Value}");
+                    batch.Add($"    Initial Arena: {initialArenaName}");
                 }
-            }
-
-            LogWrite.EncryptedLine(writer, "    Changes:");
-            if (changes.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (none)");
-            }
-            else
-            {
-                foreach (string change in changes)
+                batch.Add("    State:");
+                batch.Add($"      Halve Damage [HoG Ascended]: {FormatOptionalToggle(initialState.HalveAscended)}");
+                batch.Add($"      Halve Damage [HoG Attuned]: {FormatOptionalToggle(initialState.HalveAttuned)}");
+                batch.Add($"      Add Lifeblood: {FormatOptionalToggle(initialState.AddLifeblood)}");
+                batch.Add($"      Lifeblood Amount: {FormatOptionalInt(initialState.LifebloodAmount)}");
+                batch.Add($"      Add Soul: {FormatOptionalToggle(initialState.AddSoul)}");
+                batch.Add($"      Soul Amount: {FormatOptionalInt(initialState.SoulAmount)}");
+                batch.Add("    Changes:");
+                if (changes.Count == 0)
                 {
-                    LogWrite.EncryptedLine(writer, $"      {change}");
+                    batch.Add("      (none)");
                 }
+                else
+                {
+                    foreach (string change in changes)
+                    {
+                        batch.Add($"      {change}");
+                    }
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
-        private Dictionary<string, string> BuildSnapshot()
+        private BossChallengeState BuildState()
         {
             bool hasHalveAscended = TryGetModuleEnabled("HalveDamageHoGAscendedOrAbove", out bool halveAscended);
             bool hasHalveAttuned = TryGetModuleEnabled("HalveDamageHoGAttuned", out bool halveAttuned);
             bool hasAddLifeblood = TryGetModuleEnabled("AddLifeblood", out bool addLifeblood);
             bool hasAddSoul = TryGetModuleEnabled("AddSoul", out bool addSoul);
 
-            Dictionary<string, string> snapshot = new(StringComparer.Ordinal)
-            {
-                ["Halve Damage [HoG Ascended]"] = hasHalveAscended ? FormatToggle(halveAscended) : "N/A",
-                ["Halve Damage [HoG Attuned]"] = hasHalveAttuned ? FormatToggle(halveAttuned) : "N/A",
-                ["Add Lifeblood"] = hasAddLifeblood ? FormatToggle(addLifeblood) : "N/A",
-                ["Lifeblood Amount"] = TryGetLifebloodAmount(out int lifebloodAmount)
-                    ? lifebloodAmount.ToString(CultureInfo.InvariantCulture)
-                    : "N/A",
-                ["Add Soul"] = hasAddSoul ? FormatToggle(addSoul) : "N/A",
-                ["Soul Amount"] = TryGetSoulAmount(out int soulAmount)
-                    ? soulAmount.ToString(CultureInfo.InvariantCulture)
-                    : "N/A"
-            };
+            return new BossChallengeState(
+                hasHalveAscended ? new Optional<bool>(halveAscended) : Optional<bool>.None,
+                hasHalveAttuned ? new Optional<bool>(halveAttuned) : Optional<bool>.None,
+                hasAddLifeblood ? new Optional<bool>(addLifeblood) : Optional<bool>.None,
+                TryGetLifebloodAmount(out int lifebloodAmount) ? new Optional<int>(lifebloodAmount) : Optional<int>.None,
+                hasAddSoul ? new Optional<bool>(addSoul) : Optional<bool>.None,
+                TryGetSoulAmount(out int soulAmount) ? new Optional<int>(soulAmount) : Optional<int>.None);
+        }
 
-            return snapshot;
+        private void LogFieldChange(string key, Optional<bool> previous, Optional<bool> current, long now)
+        {
+            if (previous == current)
+            {
+                return;
+            }
+
+            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+        }
+
+        private void LogFieldChange(string key, Optional<int> previous, Optional<int> current, long now)
+        {
+            if (previous == current)
+            {
+                return;
+            }
+
+            string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
 
         private bool TryGetModuleEnabled(string moduleKey, out bool enabled)
@@ -211,8 +211,7 @@ namespace ReplayLogger
 
             try
             {
-                PropertyInfo prop = module.GetType().GetProperty("Enabled", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop?.GetValue(module) is bool flag)
+                if (ReflectionMemberAccessCache.TryGetCachedRuntimeBoolProperty(module, "Enabled", out bool flag))
                 {
                     enabled = flag;
                     return true;
@@ -265,8 +264,8 @@ namespace ReplayLogger
             try
             {
                 object raw = lifebloodAmountProperty != null
-                    ? lifebloodAmountProperty.GetValue(null)
-                    : lifebloodAmountField?.GetValue(null);
+                    ? lifebloodAmountProperty.GetCachedValue(null)
+                    : lifebloodAmountField?.GetCachedValue(null);
 
                 if (raw == null)
                 {
@@ -311,8 +310,8 @@ namespace ReplayLogger
             try
             {
                 object raw = soulAmountProperty != null
-                    ? soulAmountProperty.GetValue(null)
-                    : soulAmountField?.GetValue(null);
+                    ? soulAmountProperty.GetCachedValue(null)
+                    : soulAmountField?.GetCachedValue(null);
 
                 if (raw == null)
                 {
@@ -352,14 +351,16 @@ namespace ReplayLogger
 
             try
             {
-                object raw = modulesProperty?.GetValue(null) ?? modulesField?.GetValue(null);
+                object raw = modulesProperty?.GetCachedValue(null) ?? modulesField?.GetCachedValue(null);
                 if (raw is IDictionary dict)
                 {
                     return dict;
                 }
 
-                object value = raw?.GetType().GetProperty("Value", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(raw);
-                return value as IDictionary;
+                if (ReflectionMemberAccessCache.TryGetCachedRuntimePropertyValue(raw, "Value", out object value))
+                {
+                    return value as IDictionary;
+                }
             }
             catch
             {
@@ -415,6 +416,44 @@ namespace ReplayLogger
             return null;
         }
 
+        private static string FormatOptionalToggle(Optional<bool> value)
+        {
+            return value.HasValue ? FormatToggle(value.Value) : "N/A";
+        }
+
+        private static string FormatOptionalInt(Optional<int> value)
+        {
+            return value.HasValue
+                ? value.Value.ToString(CultureInfo.InvariantCulture)
+                : "N/A";
+        }
+
         private static string FormatToggle(bool value) => value ? "On" : "Off";
+
+        private readonly struct BossChallengeState
+        {
+            internal BossChallengeState(
+                Optional<bool> halveAscended,
+                Optional<bool> halveAttuned,
+                Optional<bool> addLifeblood,
+                Optional<int> lifebloodAmount,
+                Optional<bool> addSoul,
+                Optional<int> soulAmount)
+            {
+                HalveAscended = halveAscended;
+                HalveAttuned = halveAttuned;
+                AddLifeblood = addLifeblood;
+                LifebloodAmount = lifebloodAmount;
+                AddSoul = addSoul;
+                SoulAmount = soulAmount;
+            }
+
+            internal Optional<bool> HalveAscended { get; }
+            internal Optional<bool> HalveAttuned { get; }
+            internal Optional<bool> AddLifeblood { get; }
+            internal Optional<int> LifebloodAmount { get; }
+            internal Optional<bool> AddSoul { get; }
+            internal Optional<int> SoulAmount { get; }
+        }
     }
 }

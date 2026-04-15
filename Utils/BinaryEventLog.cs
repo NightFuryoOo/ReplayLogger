@@ -190,7 +190,7 @@ namespace ReplayLogger
                 string colorHex = ToHex(r, g, b, a);
                 string fpsText = fps.ToString(CultureInfo.InvariantCulture);
 
-                line = $"+{deltaMs}|{formattedKey}|{status}|{watermarkNumber}|#{colorHex}|{fpsText}|";
+                line = $"{deltaMs}|{formattedKey}|{status}|{watermarkNumber}|#{colorHex}|{fpsText}|";
                 return true;
             }
             catch

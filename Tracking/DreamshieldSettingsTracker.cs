@@ -15,15 +15,14 @@ namespace ReplayLogger
         private string initialArenaName;
         private string currentArenaName;
         private long currentBaseUnixTime;
-        private Dictionary<string, string> initialState = new(StringComparer.Ordinal);
-        private Dictionary<string, string> currentState = new(StringComparer.Ordinal);
+        private DreamshieldState initialState;
+        private DreamshieldState currentState;
+        private bool hasCurrentState;
         private readonly List<string> changes = new();
-        private long lastSliderLogTime;
-        private string lastLoggedRotationDelay;
-        private string lastLoggedRotationDelayInGame;
-        private string lastLoggedRotationSpeed;
-        private string lastLoggedRotationAnglesInGame;
-        private const int SliderThrottleMs = 1000;
+        private Optional<float> lastLoggedRotationDelay;
+        private Optional<float> lastLoggedRotationDelayInGame;
+        private Optional<float> lastLoggedRotationSpeed;
+        private Optional<string> lastLoggedRotationAnglesInGame;
 
         private Type dreamshieldType;
         private bool dreamshieldResolved;
@@ -39,6 +38,7 @@ namespace ReplayLogger
         private Rotate cachedRotateAction;
         private int cachedRotateActionFsmId;
         private long lastFsmSearchTime;
+        private string fsmCacheSceneName;
         private const int FsmSearchThrottleMs = 1000;
 
         public bool HasData => hasInitialState || changes.Count > 0;
@@ -49,70 +49,69 @@ namespace ReplayLogger
             initialArenaName = null;
             currentArenaName = null;
             currentBaseUnixTime = 0;
-            initialState.Clear();
-            currentState.Clear();
+            initialState = default;
+            currentState = default;
+            hasCurrentState = false;
             changes.Clear();
             dreamshieldControlFsm = null;
             dreamshieldControlFsmId = 0;
             cachedRotateAction = null;
             cachedRotateActionFsmId = 0;
             lastFsmSearchTime = 0;
-            lastSliderLogTime = 0;
-            lastLoggedRotationDelay = null;
-            lastLoggedRotationDelayInGame = null;
-            lastLoggedRotationSpeed = null;
-            lastLoggedRotationAnglesInGame = null;
+            fsmCacheSceneName = null;
+            PlayMakerFsmSceneCache.Invalidate();
+            lastLoggedRotationDelay = Optional<float>.None;
+            lastLoggedRotationDelayInGame = Optional<float>.None;
+            lastLoggedRotationSpeed = Optional<float>.None;
+            lastLoggedRotationAnglesInGame = Optional<string>.None;
         }
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
             currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
             currentBaseUnixTime = baseUnixTime;
+            long now = baseUnixTime;
             dreamshieldControlFsm = null;
             dreamshieldControlFsmId = 0;
             cachedRotateAction = null;
             cachedRotateActionFsmId = 0;
             lastFsmSearchTime = 0;
+            fsmCacheSceneName = null;
+            PlayMakerFsmSceneCache.Invalidate();
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
+            DreamshieldState snapshot = BuildState(now);
 
             if (!hasInitialState)
             {
                 hasInitialState = true;
                 initialArenaName = currentArenaName;
-                initialState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                initialState = snapshot;
+                currentState = snapshot;
+                hasCurrentState = true;
+                UpdateSliderBaseline(snapshot);
                 return;
             }
 
-            if (currentState.Count == 0)
+            if (!hasCurrentState)
             {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                currentState = snapshot;
+                hasCurrentState = true;
+                UpdateSliderBaseline(snapshot);
                 return;
             }
 
-            foreach (var entry in snapshot)
-            {
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
+            LogFieldChange("Dreamshield Start Angle", currentState.StartAngle, snapshot.StartAngle, now);
+            LogFieldChange("Rotation Delay (sec)", currentState.RotationDelay, snapshot.RotationDelay, now);
+            LogFieldChange("Rotation Speed Multiplier", currentState.RotationSpeed, snapshot.RotationSpeed, now);
+            LogFieldChange("Dreamshield Start Angle (In-Game)", currentState.StartAngleInGame, snapshot.StartAngleInGame, now);
+            LogFieldChange("Rotation Delay (In-Game)", currentState.RotationDelayInGame, snapshot.RotationDelayInGame, now);
+            LogFieldChange("Rotation Angles (In-Game)", currentState.RotationAnglesInGame, snapshot.RotationAnglesInGame, now);
 
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            currentState = snapshot;
             UpdateSliderBaseline(snapshot);
         }
 
-        public void Update(string arenaName)
+        public void Update(string arenaName, long nowUnixTime)
         {
             if (!hasInitialState)
             {
@@ -125,44 +124,23 @@ namespace ReplayLogger
                 return;
             }
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
-            if (snapshot.Count == 0)
-            {
-                return;
-            }
+            long now = nowUnixTime;
+            DreamshieldState snapshot = BuildState(now);
 
-            if (currentState.Count == 0)
+            if (!hasCurrentState)
             {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                currentState = snapshot;
+                hasCurrentState = true;
                 UpdateSliderBaseline(snapshot);
                 return;
             }
 
-            foreach (var entry in snapshot)
-            {
-                if (IsSliderKey(entry.Key))
-                {
-                    continue;
-                }
+            LogFieldChange("Dreamshield Start Angle", currentState.StartAngle, snapshot.StartAngle, now);
+            LogFieldChange("Dreamshield Start Angle (In-Game)", currentState.StartAngleInGame, snapshot.StartAngleInGame, now);
 
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
+            LogSliderChanges(snapshot, now);
 
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            LogSliderChanges(snapshot);
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            currentState = snapshot;
         }
 
         public void WriteSection(StreamWriter writer)
@@ -177,104 +155,88 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "  Dreamshield Settings:");
-            if (!string.IsNullOrEmpty(initialArenaName))
+            List<string> batch = TempObjectPools.RentStringList(changes.Count + 10);
+            try
             {
-                LogWrite.EncryptedLine(writer, $"    Initial Arena: {initialArenaName}");
-            }
-            LogWrite.EncryptedLine(writer, "    State:");
-
-            if (initialState.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (unavailable)");
-            }
-            else
-            {
-                foreach (var entry in initialState)
+                batch.Add("  Dreamshield Settings:");
+                if (!string.IsNullOrEmpty(initialArenaName))
                 {
-                    LogWrite.EncryptedLine(writer, $"      {entry.Key}: {entry.Value}");
+                    batch.Add($"    Initial Arena: {initialArenaName}");
                 }
-            }
-
-            LogWrite.EncryptedLine(writer, "    Changes:");
-            if (changes.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (none)");
-            }
-            else
-            {
-                foreach (string change in changes)
+                batch.Add("    State:");
+                batch.Add($"      Dreamshield Start Angle: {FormatOptionalToggle(initialState.StartAngle)}");
+                batch.Add($"      Rotation Delay (sec): {FormatOptionalFloat(initialState.RotationDelay)}");
+                batch.Add($"      Rotation Speed Multiplier: {FormatOptionalFloat(initialState.RotationSpeed)}");
+                batch.Add($"      Dreamshield Start Angle (In-Game): {FormatOptionalToggle(initialState.StartAngleInGame)}");
+                batch.Add($"      Rotation Delay (In-Game): {FormatOptionalFloat(initialState.RotationDelayInGame)}");
+                batch.Add($"      Rotation Angles (In-Game): {FormatOptionalString(initialState.RotationAnglesInGame)}");
+                batch.Add("    Changes:");
+                if (changes.Count == 0)
                 {
-                    LogWrite.EncryptedLine(writer, $"      {change}");
+                    batch.Add("      (none)");
                 }
+                else
+                {
+                    foreach (string change in changes)
+                    {
+                        batch.Add($"      {change}");
+                    }
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
-        private Dictionary<string, string> BuildSnapshot()
+        private DreamshieldState BuildState(long nowUnixTime)
         {
             bool hasStartAngle = TryGetStartAngleEnabled(out bool startAngleEnabled);
             bool hasDelay = TryGetRotationDelay(out float rotationDelay);
             bool hasSpeed = TryGetRotationSpeed(out float rotationSpeed);
 
-            bool hasFsm = TryGetDreamshieldControlFsm(out PlayMakerFSM fsm);
+            bool hasFsm = TryGetDreamshieldControlFsm(out PlayMakerFSM fsm, nowUnixTime);
             bool startAngleInGame = hasFsm && hasStartAngle && startAngleEnabled;
 
-            string inGameDelay = (startAngleInGame && hasDelay)
-                ? rotationDelay.ToString("0.##", CultureInfo.InvariantCulture)
-                : "N/A";
-
-            string inGameAngles = (startAngleInGame && TryGetRotationAnglesInGame(fsm, out string angles))
-                ? angles
-                : "N/A";
-
-            Dictionary<string, string> snapshot = new(StringComparer.Ordinal)
+            Optional<string> inGameAngles = Optional<string>.None;
+            if (startAngleInGame && TryGetRotationAnglesInGame(fsm, out string angles) && !string.IsNullOrEmpty(angles))
             {
-                ["Dreamshield Start Angle"] = hasStartAngle ? FormatToggle(startAngleEnabled) : "N/A",
-                ["Rotation Delay (sec)"] = hasDelay ? rotationDelay.ToString("0.##", CultureInfo.InvariantCulture) : "N/A",
-                ["Rotation Speed Multiplier"] = hasSpeed ? rotationSpeed.ToString("0.##", CultureInfo.InvariantCulture) : "N/A",
-                ["Dreamshield Start Angle (In-Game)"] = hasFsm && hasStartAngle
-                    ? FormatToggle(startAngleEnabled)
-                    : "N/A",
-                ["Rotation Delay (In-Game)"] = inGameDelay,
-                ["Rotation Angles (In-Game)"] = inGameAngles
-            };
-
-            return snapshot;
-        }
-
-        private void LogSliderChanges(Dictionary<string, string> snapshot)
-        {
-            if (snapshot == null)
-            {
-                return;
+                inGameAngles = new Optional<string>(angles);
             }
 
-            snapshot.TryGetValue("Rotation Delay (sec)", out string delayValue);
-            snapshot.TryGetValue("Rotation Delay (In-Game)", out string delayInGameValue);
-            snapshot.TryGetValue("Rotation Speed Multiplier", out string speedValue);
-            snapshot.TryGetValue("Rotation Angles (In-Game)", out string speedInGameValue);
+            return new DreamshieldState(
+                hasStartAngle ? new Optional<bool>(startAngleEnabled) : Optional<bool>.None,
+                hasDelay ? new Optional<float>(NormalizeFloat(rotationDelay)) : Optional<float>.None,
+                hasSpeed ? new Optional<float>(NormalizeFloat(rotationSpeed)) : Optional<float>.None,
+                hasFsm && hasStartAngle ? new Optional<bool>(startAngleEnabled) : Optional<bool>.None,
+                startAngleInGame && hasDelay ? new Optional<float>(NormalizeFloat(rotationDelay)) : Optional<float>.None,
+                inGameAngles);
+        }
 
-            bool delayChanged = !string.Equals(lastLoggedRotationDelay, delayValue, StringComparison.Ordinal);
-            bool delayInGameChanged = !string.Equals(lastLoggedRotationDelayInGame, delayInGameValue, StringComparison.Ordinal);
-            bool speedChanged = !string.Equals(lastLoggedRotationSpeed, speedValue, StringComparison.Ordinal);
-            bool speedInGameChanged = !string.Equals(lastLoggedRotationAnglesInGame, speedInGameValue, StringComparison.Ordinal);
+        private void LogSliderChanges(DreamshieldState snapshot, long now)
+        {
+            Optional<float> delayValue = snapshot.RotationDelay;
+            Optional<float> delayInGameValue = snapshot.RotationDelayInGame;
+            Optional<float> speedValue = snapshot.RotationSpeed;
+            Optional<string> speedInGameValue = snapshot.RotationAnglesInGame;
+
+            bool delayChanged = delayValue != lastLoggedRotationDelay;
+            bool delayInGameChanged = delayInGameValue != lastLoggedRotationDelayInGame;
+            bool speedChanged = speedValue != lastLoggedRotationSpeed;
+            bool speedInGameChanged = speedInGameValue != lastLoggedRotationAnglesInGame;
 
             if (!delayChanged && !delayInGameChanged && !speedChanged && !speedInGameChanged)
             {
                 return;
             }
 
-            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            if (lastSliderLogTime > 0 && now - lastSliderLogTime < SliderThrottleMs)
-            {
-                return;
-            }
-
             if (delayChanged)
             {
-                string descriptor = lastLoggedRotationDelay == null
-                    ? $"Rotation Delay (sec): {delayValue}"
-                    : $"Rotation Delay (sec): {lastLoggedRotationDelay} -> {delayValue}";
+                string descriptor = !lastLoggedRotationDelay.HasValue
+                    ? $"Rotation Delay (sec): {FormatOptionalFloat(delayValue)}"
+                    : $"Rotation Delay (sec): {FormatOptionalFloat(lastLoggedRotationDelay)} -> {FormatOptionalFloat(delayValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedRotationDelay = delayValue;
@@ -282,9 +244,9 @@ namespace ReplayLogger
 
             if (delayInGameChanged)
             {
-                string descriptor = lastLoggedRotationDelayInGame == null
-                    ? $"Rotation Delay (In-Game): {delayInGameValue}"
-                    : $"Rotation Delay (In-Game): {lastLoggedRotationDelayInGame} -> {delayInGameValue}";
+                string descriptor = !lastLoggedRotationDelayInGame.HasValue
+                    ? $"Rotation Delay (In-Game): {FormatOptionalFloat(delayInGameValue)}"
+                    : $"Rotation Delay (In-Game): {FormatOptionalFloat(lastLoggedRotationDelayInGame)} -> {FormatOptionalFloat(delayInGameValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedRotationDelayInGame = delayInGameValue;
@@ -292,9 +254,9 @@ namespace ReplayLogger
 
             if (speedChanged)
             {
-                string descriptor = lastLoggedRotationSpeed == null
-                    ? $"Rotation Speed Multiplier: {speedValue}"
-                    : $"Rotation Speed Multiplier: {lastLoggedRotationSpeed} -> {speedValue}";
+                string descriptor = !lastLoggedRotationSpeed.HasValue
+                    ? $"Rotation Speed Multiplier: {FormatOptionalFloat(speedValue)}"
+                    : $"Rotation Speed Multiplier: {FormatOptionalFloat(lastLoggedRotationSpeed)} -> {FormatOptionalFloat(speedValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedRotationSpeed = speedValue;
@@ -302,37 +264,107 @@ namespace ReplayLogger
 
             if (speedInGameChanged)
             {
-                string descriptor = lastLoggedRotationAnglesInGame == null
-                    ? $"Rotation Angles (In-Game): {speedInGameValue}"
-                    : $"Rotation Angles (In-Game): {lastLoggedRotationAnglesInGame} -> {speedInGameValue}";
+                string descriptor = !lastLoggedRotationAnglesInGame.HasValue
+                    ? $"Rotation Angles (In-Game): {FormatOptionalString(speedInGameValue)}"
+                    : $"Rotation Angles (In-Game): {FormatOptionalString(lastLoggedRotationAnglesInGame)} -> {FormatOptionalString(speedInGameValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedRotationAnglesInGame = speedInGameValue;
             }
-
-            lastSliderLogTime = now;
         }
 
-        private void UpdateSliderBaseline(Dictionary<string, string> snapshot)
+        private void UpdateSliderBaseline(DreamshieldState snapshot)
         {
-            if (snapshot == null)
+            lastLoggedRotationDelay = snapshot.RotationDelay;
+            lastLoggedRotationDelayInGame = snapshot.RotationDelayInGame;
+            lastLoggedRotationSpeed = snapshot.RotationSpeed;
+            lastLoggedRotationAnglesInGame = snapshot.RotationAnglesInGame;
+        }
+
+        private void LogFieldChange(string key, Optional<bool> previous, Optional<bool> current, long now)
+        {
+            if (previous == current)
             {
                 return;
             }
 
-            snapshot.TryGetValue("Rotation Delay (sec)", out lastLoggedRotationDelay);
-            snapshot.TryGetValue("Rotation Delay (In-Game)", out lastLoggedRotationDelayInGame);
-            snapshot.TryGetValue("Rotation Speed Multiplier", out lastLoggedRotationSpeed);
-            snapshot.TryGetValue("Rotation Angles (In-Game)", out lastLoggedRotationAnglesInGame);
-            lastSliderLogTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
 
-        private static bool IsSliderKey(string key)
+        private void LogFieldChange(string key, Optional<float> previous, Optional<float> current, long now)
         {
-            return string.Equals(key, "Rotation Delay (sec)", StringComparison.Ordinal) ||
-                string.Equals(key, "Rotation Delay (In-Game)", StringComparison.Ordinal) ||
-                string.Equals(key, "Rotation Speed Multiplier", StringComparison.Ordinal) ||
-                string.Equals(key, "Rotation Angles (In-Game)", StringComparison.Ordinal);
+            if (previous == current)
+            {
+                return;
+            }
+
+            string descriptor = $"{key}: {FormatOptionalFloat(previous)} -> {FormatOptionalFloat(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+        }
+
+        private void LogFieldChange(string key, Optional<string> previous, Optional<string> current, long now)
+        {
+            if (previous == current)
+            {
+                return;
+            }
+
+            string descriptor = $"{key}: {FormatOptionalString(previous)} -> {FormatOptionalString(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+        }
+
+        private static float NormalizeFloat(float value)
+        {
+            return (float)Math.Round(value, 2, MidpointRounding.ToEven);
+        }
+
+        private static string FormatOptionalToggle(Optional<bool> value)
+        {
+            return value.HasValue ? FormatToggle(value.Value) : "N/A";
+        }
+
+        private static string FormatOptionalFloat(Optional<float> value)
+        {
+            return value.HasValue
+                ? value.Value.ToString("0.##", CultureInfo.InvariantCulture)
+                : "N/A";
+        }
+
+        private static string FormatOptionalString(Optional<string> value)
+        {
+            return value.HasValue && !string.IsNullOrEmpty(value.Value)
+                ? value.Value
+                : "N/A";
+        }
+
+        private readonly struct DreamshieldState
+        {
+            internal DreamshieldState(
+                Optional<bool> startAngle,
+                Optional<float> rotationDelay,
+                Optional<float> rotationSpeed,
+                Optional<bool> startAngleInGame,
+                Optional<float> rotationDelayInGame,
+                Optional<string> rotationAnglesInGame)
+            {
+                StartAngle = startAngle;
+                RotationDelay = rotationDelay;
+                RotationSpeed = rotationSpeed;
+                StartAngleInGame = startAngleInGame;
+                RotationDelayInGame = rotationDelayInGame;
+                RotationAnglesInGame = rotationAnglesInGame;
+            }
+
+            internal Optional<bool> StartAngle { get; }
+            internal Optional<float> RotationDelay { get; }
+            internal Optional<float> RotationSpeed { get; }
+            internal Optional<bool> StartAngleInGame { get; }
+            internal Optional<float> RotationDelayInGame { get; }
+            internal Optional<string> RotationAnglesInGame { get; }
         }
 
         private bool TryGetStartAngleEnabled(out bool enabled)
@@ -430,15 +462,17 @@ namespace ReplayLogger
             return true;
         }
 
-        private bool TryGetDreamshieldControlFsm(out PlayMakerFSM fsm)
+        private bool TryGetDreamshieldControlFsm(out PlayMakerFSM fsm, long nowUnixTime)
         {
+            EnsureFsmSceneCacheCurrent();
+
             fsm = dreamshieldControlFsm;
             if (IsDreamshieldControlFsmValid(fsm))
             {
                 return true;
             }
 
-            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long now = nowUnixTime;
             if (lastFsmSearchTime > 0 && now - lastFsmSearchTime < FsmSearchThrottleMs)
             {
                 return false;
@@ -446,10 +480,19 @@ namespace ReplayLogger
 
             lastFsmSearchTime = now;
 
-            PlayMakerFSM best = FindDreamshieldFsm(currentArenaName);
+            PlayMakerFSM best = FindDreamshieldFsm(currentArenaName, forceRefresh: false);
             if (best == null && !string.IsNullOrEmpty(currentArenaName))
             {
-                best = FindDreamshieldFsm(null);
+                best = FindDreamshieldFsm(null, forceRefresh: false);
+            }
+
+            if (best == null)
+            {
+                best = FindDreamshieldFsm(currentArenaName, forceRefresh: true);
+                if (best == null && !string.IsNullOrEmpty(currentArenaName))
+                {
+                    best = FindDreamshieldFsm(null, forceRefresh: true);
+                }
             }
 
             if (best == null)
@@ -504,12 +547,12 @@ namespace ReplayLogger
             return true;
         }
 
-        private static PlayMakerFSM FindDreamshieldFsm(string sceneName)
+        private PlayMakerFSM FindDreamshieldFsm(string sceneName, bool forceRefresh)
         {
             PlayMakerFSM best = null;
             int bestScore = int.MinValue;
 
-            PlayMakerFSM[] fsms = UnityEngine.Object.FindObjectsOfType<PlayMakerFSM>();
+            PlayMakerFSM[] fsms = GetSceneFsmCache(forceRefresh);
             foreach (PlayMakerFSM fsm in fsms)
             {
                 if (!IsDreamshieldControlFsmValid(fsm))
@@ -542,6 +585,27 @@ namespace ReplayLogger
             return best;
         }
 
+        private void EnsureFsmSceneCacheCurrent()
+        {
+            string activeSceneName = GameManager.instance?.sceneName;
+            if (string.Equals(fsmCacheSceneName, activeSceneName, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            fsmCacheSceneName = activeSceneName;
+            PlayMakerFsmSceneCache.Invalidate();
+            dreamshieldControlFsm = null;
+            dreamshieldControlFsmId = 0;
+            cachedRotateAction = null;
+            cachedRotateActionFsmId = 0;
+        }
+
+        private PlayMakerFSM[] GetSceneFsmCache(bool forceRefresh)
+        {
+            return PlayMakerFsmSceneCache.Get(forceRefresh);
+        }
+
         private bool TryGetBoolSetting(string primaryName, string altName, ref FieldInfo field, ref PropertyInfo property, out bool enabled)
         {
             enabled = false;
@@ -564,8 +628,8 @@ namespace ReplayLogger
             try
             {
                 object raw = property != null
-                    ? property.GetValue(null)
-                    : field?.GetValue(null);
+                    ? property.GetCachedValue(null)
+                    : field?.GetCachedValue(null);
 
                 if (raw is bool flag)
                 {
@@ -602,8 +666,8 @@ namespace ReplayLogger
             try
             {
                 object raw = property != null
-                    ? property.GetValue(null)
-                    : field?.GetValue(null);
+                    ? property.GetCachedValue(null)
+                    : field?.GetCachedValue(null);
 
                 if (raw == null)
                 {
@@ -660,7 +724,7 @@ namespace ReplayLogger
                     return 0f;
                 }
 
-                object raw = field.GetValue(rotate);
+                object raw = field.GetCachedValue(rotate);
                 if (raw is FsmFloat fsmFloat)
                 {
                     return fsmFloat.Value;

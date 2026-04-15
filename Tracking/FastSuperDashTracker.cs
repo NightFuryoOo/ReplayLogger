@@ -14,13 +14,12 @@ namespace ReplayLogger
         private string initialArenaName;
         private string currentArenaName;
         private long currentBaseUnixTime;
-        private Dictionary<string, string> initialState = new(StringComparer.Ordinal);
-        private Dictionary<string, string> currentState = new(StringComparer.Ordinal);
+        private FastSuperDashState initialState;
+        private FastSuperDashState currentState;
+        private bool hasCurrentState;
         private readonly List<string> changes = new();
-        private long lastSpeedLogTime;
-        private string lastLoggedSpeedValue;
-        private string lastLoggedSpeedInGameValue;
-        private const int SpeedMultiplierThrottleMs = 1000;
+        private Optional<float> lastLoggedSpeedValue;
+        private Optional<float> lastLoggedSpeedInGameValue;
 
         private Type moduleManagerType;
         private bool moduleManagerResolved;
@@ -44,58 +43,55 @@ namespace ReplayLogger
             initialArenaName = null;
             currentArenaName = null;
             currentBaseUnixTime = 0;
-            initialState.Clear();
-            currentState.Clear();
+            initialState = default;
+            currentState = default;
+            hasCurrentState = false;
             changes.Clear();
-            lastSpeedLogTime = 0;
-            lastLoggedSpeedValue = null;
-            lastLoggedSpeedInGameValue = null;
+            lastLoggedSpeedValue = Optional<float>.None;
+            lastLoggedSpeedInGameValue = Optional<float>.None;
         }
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
             currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
             currentBaseUnixTime = baseUnixTime;
+            long now = baseUnixTime;
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
+            FastSuperDashState snapshot = BuildState();
 
             if (!hasInitialState)
             {
                 hasInitialState = true;
                 initialArenaName = currentArenaName;
-                initialState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                initialState = snapshot;
+                currentState = snapshot;
+                hasCurrentState = true;
+                UpdateSpeedBaseline(snapshot);
                 return;
             }
 
-            if (currentState.Count == 0)
+            if (!hasCurrentState)
             {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                currentState = snapshot;
+                hasCurrentState = true;
+                UpdateSpeedBaseline(snapshot);
                 return;
             }
 
-            foreach (var entry in snapshot)
-            {
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
+            LogFieldChange("Fast Super Dash", currentState.FastSuperDash, snapshot.FastSuperDash, now);
+            LogFieldChange("Instant Super Dash", currentState.InstantSuperDash, snapshot.InstantSuperDash, now);
+            LogFieldChange("Allow in All Scenes", currentState.AllowEverywhere, snapshot.AllowEverywhere, now);
+            LogFieldChange("Speed Multiplier", currentState.SpeedMultiplier, snapshot.SpeedMultiplier, now);
+            LogFieldChange("Fast Super Dash (In-Game)", currentState.FastSuperDashInGame, snapshot.FastSuperDashInGame, now);
+            LogFieldChange("Instant Super Dash (In-Game)", currentState.InstantSuperDashInGame, snapshot.InstantSuperDashInGame, now);
+            LogFieldChange("Allow in All Scenes (In-Game)", currentState.AllowEverywhereInGame, snapshot.AllowEverywhereInGame, now);
+            LogFieldChange("Speed Multiplier (In-Game)", currentState.SpeedMultiplierInGame, snapshot.SpeedMultiplierInGame, now);
 
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            currentState = snapshot;
             UpdateSpeedBaseline(snapshot);
         }
 
-        public void Update(string arenaName)
+        public void Update(string arenaName, long nowUnixTime)
         {
             if (!hasInitialState)
             {
@@ -108,44 +104,26 @@ namespace ReplayLogger
                 return;
             }
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
-            if (snapshot.Count == 0)
-            {
-                return;
-            }
+            FastSuperDashState snapshot = BuildState();
 
-            if (currentState.Count == 0)
+            if (!hasCurrentState)
             {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                currentState = snapshot;
+                hasCurrentState = true;
                 UpdateSpeedBaseline(snapshot);
                 return;
             }
 
-            foreach (var entry in snapshot)
-            {
-                if (IsSpeedMultiplierKey(entry.Key))
-                {
-                    continue;
-                }
+            long now = nowUnixTime;
+            LogFieldChange("Fast Super Dash", currentState.FastSuperDash, snapshot.FastSuperDash, now);
+            LogFieldChange("Instant Super Dash", currentState.InstantSuperDash, snapshot.InstantSuperDash, now);
+            LogFieldChange("Allow in All Scenes", currentState.AllowEverywhere, snapshot.AllowEverywhere, now);
+            LogFieldChange("Fast Super Dash (In-Game)", currentState.FastSuperDashInGame, snapshot.FastSuperDashInGame, now);
+            LogFieldChange("Instant Super Dash (In-Game)", currentState.InstantSuperDashInGame, snapshot.InstantSuperDashInGame, now);
+            LogFieldChange("Allow in All Scenes (In-Game)", currentState.AllowEverywhereInGame, snapshot.AllowEverywhereInGame, now);
+            LogSpeedMultiplierChanges(snapshot, now);
 
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            LogSpeedMultiplierChanges(snapshot);
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            currentState = snapshot;
         }
 
         public void WriteSection(StreamWriter writer)
@@ -160,40 +138,45 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "  Fast Super Dash:");
-            if (!string.IsNullOrEmpty(initialArenaName))
+            List<string> batch = TempObjectPools.RentStringList(changes.Count + 12);
+            try
             {
-                LogWrite.EncryptedLine(writer, $"    Initial Arena: {initialArenaName}");
-            }
-            LogWrite.EncryptedLine(writer, "    State:");
-
-            if (initialState.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (unavailable)");
-            }
-            else
-            {
-                foreach (var entry in initialState)
+                batch.Add("  Fast Super Dash:");
+                if (!string.IsNullOrEmpty(initialArenaName))
                 {
-                    LogWrite.EncryptedLine(writer, $"      {entry.Key}: {entry.Value}");
+                    batch.Add($"    Initial Arena: {initialArenaName}");
                 }
-            }
-
-            LogWrite.EncryptedLine(writer, "    Changes:");
-            if (changes.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (none)");
-            }
-            else
-            {
-                foreach (string change in changes)
+                batch.Add("    State:");
+                batch.Add($"      Fast Super Dash: {FormatOptionalToggle(initialState.FastSuperDash)}");
+                batch.Add($"      Instant Super Dash: {FormatOptionalToggle(initialState.InstantSuperDash)}");
+                batch.Add($"      Allow in All Scenes: {FormatOptionalToggle(initialState.AllowEverywhere)}");
+                batch.Add($"      Speed Multiplier: {FormatOptionalFloat(initialState.SpeedMultiplier)}");
+                batch.Add($"      Fast Super Dash (In-Game): {FormatOptionalToggle(initialState.FastSuperDashInGame)}");
+                batch.Add($"      Instant Super Dash (In-Game): {FormatOptionalToggle(initialState.InstantSuperDashInGame)}");
+                batch.Add($"      Allow in All Scenes (In-Game): {FormatOptionalToggle(initialState.AllowEverywhereInGame)}");
+                batch.Add($"      Speed Multiplier (In-Game): {FormatOptionalFloat(initialState.SpeedMultiplierInGame)}");
+                batch.Add("    Changes:");
+                if (changes.Count == 0)
                 {
-                    LogWrite.EncryptedLine(writer, $"      {change}");
+                    batch.Add("      (none)");
                 }
+                else
+                {
+                    foreach (string change in changes)
+                    {
+                        batch.Add($"      {change}");
+                    }
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
-        private Dictionary<string, string> BuildSnapshot()
+        private FastSuperDashState BuildState()
         {
             bool hasEnabled = TryGetFastSuperDashEnabled(out bool enabled);
             bool hasLoaded = TryGetFastSuperDashLoaded(out bool loaded);
@@ -205,63 +188,33 @@ namespace ReplayLogger
             bool hasSceneState = hasEverywhere && (hasEnabled || hasLoaded) &&
                                  TryComputeActiveState(moduleActive, everywhere, out activeInGame);
 
-            Dictionary<string, string> snapshot = new(StringComparer.Ordinal)
-            {
-                ["Fast Super Dash"] = hasEnabled ? FormatToggle(enabled) : "N/A",
-                ["Instant Super Dash"] = hasInstant ? FormatToggle(instant) : "N/A",
-                ["Allow in All Scenes"] = hasEverywhere ? FormatToggle(everywhere) : "N/A",
-                ["Speed Multiplier"] = hasMultiplier
-                    ? multiplier.ToString("0.##", CultureInfo.InvariantCulture)
-                    : "N/A",
-                ["Fast Super Dash (In-Game)"] = hasSceneState ? FormatToggle(activeInGame) : "N/A",
-                ["Instant Super Dash (In-Game)"] = hasSceneState && hasInstant
-                    ? FormatToggle(activeInGame && instant)
-                    : "N/A",
-                ["Allow in All Scenes (In-Game)"] = hasEverywhere && (hasEnabled || hasLoaded)
-                    ? FormatToggle(moduleActive && everywhere)
-                    : "N/A",
-                ["Speed Multiplier (In-Game)"] = hasSceneState && hasMultiplier
-                    ? (activeInGame ? multiplier : 1f).ToString("0.##", CultureInfo.InvariantCulture)
-                    : "N/A"
-            };
-
-            return snapshot;
+            return new FastSuperDashState(
+                hasEnabled ? new Optional<bool>(enabled) : Optional<bool>.None,
+                hasInstant ? new Optional<bool>(instant) : Optional<bool>.None,
+                hasEverywhere ? new Optional<bool>(everywhere) : Optional<bool>.None,
+                hasMultiplier ? new Optional<float>(NormalizeFloat(multiplier)) : Optional<float>.None,
+                hasSceneState ? new Optional<bool>(activeInGame) : Optional<bool>.None,
+                hasSceneState && hasInstant ? new Optional<bool>(activeInGame && instant) : Optional<bool>.None,
+                hasEverywhere && (hasEnabled || hasLoaded) ? new Optional<bool>(moduleActive && everywhere) : Optional<bool>.None,
+                hasSceneState && hasMultiplier ? new Optional<float>(NormalizeFloat(activeInGame ? multiplier : 1f)) : Optional<float>.None);
         }
 
-        private void LogSpeedMultiplierChanges(Dictionary<string, string> snapshot)
+        private void LogSpeedMultiplierChanges(FastSuperDashState snapshot, long now)
         {
-            if (snapshot == null)
-            {
-                return;
-            }
-
-            if (!snapshot.TryGetValue("Speed Multiplier", out string speedValue) &&
-                !snapshot.TryGetValue("Speed Multiplier (In-Game)", out string speedInGameValue))
-            {
-                return;
-            }
-
-            snapshot.TryGetValue("Speed Multiplier", out speedValue);
-            snapshot.TryGetValue("Speed Multiplier (In-Game)", out speedInGameValue);
-
-            bool speedChanged = !string.Equals(lastLoggedSpeedValue, speedValue, StringComparison.Ordinal);
-            bool speedInGameChanged = !string.Equals(lastLoggedSpeedInGameValue, speedInGameValue, StringComparison.Ordinal);
+            Optional<float> speedValue = snapshot.SpeedMultiplier;
+            Optional<float> speedInGameValue = snapshot.SpeedMultiplierInGame;
+            bool speedChanged = speedValue != lastLoggedSpeedValue;
+            bool speedInGameChanged = speedInGameValue != lastLoggedSpeedInGameValue;
             if (!speedChanged && !speedInGameChanged)
-            {
-                return;
-            }
-
-            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            if (lastSpeedLogTime > 0 && now - lastSpeedLogTime < SpeedMultiplierThrottleMs)
             {
                 return;
             }
 
             if (speedChanged)
             {
-                string descriptor = lastLoggedSpeedValue == null
-                    ? $"Speed Multiplier: {speedValue}"
-                    : $"Speed Multiplier: {lastLoggedSpeedValue} -> {speedValue}";
+                string descriptor = !lastLoggedSpeedValue.HasValue
+                    ? $"Speed Multiplier: {FormatOptionalFloat(speedValue)}"
+                    : $"Speed Multiplier: {FormatOptionalFloat(lastLoggedSpeedValue)} -> {FormatOptionalFloat(speedValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedSpeedValue = speedValue;
@@ -269,33 +222,92 @@ namespace ReplayLogger
 
             if (speedInGameChanged)
             {
-                string descriptor = lastLoggedSpeedInGameValue == null
-                    ? $"Speed Multiplier (In-Game): {speedInGameValue}"
-                    : $"Speed Multiplier (In-Game): {lastLoggedSpeedInGameValue} -> {speedInGameValue}";
+                string descriptor = !lastLoggedSpeedInGameValue.HasValue
+                    ? $"Speed Multiplier (In-Game): {FormatOptionalFloat(speedInGameValue)}"
+                    : $"Speed Multiplier (In-Game): {FormatOptionalFloat(lastLoggedSpeedInGameValue)} -> {FormatOptionalFloat(speedInGameValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedSpeedInGameValue = speedInGameValue;
             }
-
-            lastSpeedLogTime = now;
         }
 
-        private void UpdateSpeedBaseline(Dictionary<string, string> snapshot)
+        private void UpdateSpeedBaseline(FastSuperDashState snapshot)
         {
-            if (snapshot == null)
+            lastLoggedSpeedValue = snapshot.SpeedMultiplier;
+            lastLoggedSpeedInGameValue = snapshot.SpeedMultiplierInGame;
+        }
+
+        private void LogFieldChange(string key, Optional<bool> previous, Optional<bool> current, long now)
+        {
+            if (previous == current)
             {
                 return;
             }
 
-            snapshot.TryGetValue("Speed Multiplier", out lastLoggedSpeedValue);
-            snapshot.TryGetValue("Speed Multiplier (In-Game)", out lastLoggedSpeedInGameValue);
-            lastSpeedLogTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
 
-        private static bool IsSpeedMultiplierKey(string key)
+        private void LogFieldChange(string key, Optional<float> previous, Optional<float> current, long now)
         {
-            return string.Equals(key, "Speed Multiplier", StringComparison.Ordinal) ||
-                string.Equals(key, "Speed Multiplier (In-Game)", StringComparison.Ordinal);
+            if (previous == current)
+            {
+                return;
+            }
+
+            string descriptor = $"{key}: {FormatOptionalFloat(previous)} -> {FormatOptionalFloat(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+        }
+
+        private static float NormalizeFloat(float value)
+        {
+            return (float)Math.Round(value, 2, MidpointRounding.ToEven);
+        }
+
+        private static string FormatOptionalToggle(Optional<bool> value)
+        {
+            return value.HasValue ? FormatToggle(value.Value) : "N/A";
+        }
+
+        private static string FormatOptionalFloat(Optional<float> value)
+        {
+            return value.HasValue
+                ? value.Value.ToString("0.##", CultureInfo.InvariantCulture)
+                : "N/A";
+        }
+
+        private readonly struct FastSuperDashState
+        {
+            internal FastSuperDashState(
+                Optional<bool> fastSuperDash,
+                Optional<bool> instantSuperDash,
+                Optional<bool> allowEverywhere,
+                Optional<float> speedMultiplier,
+                Optional<bool> fastSuperDashInGame,
+                Optional<bool> instantSuperDashInGame,
+                Optional<bool> allowEverywhereInGame,
+                Optional<float> speedMultiplierInGame)
+            {
+                FastSuperDash = fastSuperDash;
+                InstantSuperDash = instantSuperDash;
+                AllowEverywhere = allowEverywhere;
+                SpeedMultiplier = speedMultiplier;
+                FastSuperDashInGame = fastSuperDashInGame;
+                InstantSuperDashInGame = instantSuperDashInGame;
+                AllowEverywhereInGame = allowEverywhereInGame;
+                SpeedMultiplierInGame = speedMultiplierInGame;
+            }
+
+            internal Optional<bool> FastSuperDash { get; }
+            internal Optional<bool> InstantSuperDash { get; }
+            internal Optional<bool> AllowEverywhere { get; }
+            internal Optional<float> SpeedMultiplier { get; }
+            internal Optional<bool> FastSuperDashInGame { get; }
+            internal Optional<bool> InstantSuperDashInGame { get; }
+            internal Optional<bool> AllowEverywhereInGame { get; }
+            internal Optional<float> SpeedMultiplierInGame { get; }
         }
 
         private bool TryGetFastSuperDashLoaded(out bool loaded)
@@ -308,8 +320,7 @@ namespace ReplayLogger
 
             try
             {
-                PropertyInfo prop = module.GetType().GetProperty("Loaded", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop?.GetValue(module) is bool flag)
+                if (ReflectionMemberAccessCache.TryGetCachedRuntimeBoolProperty(module, "Loaded", out bool flag))
                 {
                     loaded = flag;
                     return true;
@@ -332,8 +343,7 @@ namespace ReplayLogger
 
             try
             {
-                PropertyInfo prop = module.GetType().GetProperty("Enabled", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop?.GetValue(module) is bool flag)
+                if (ReflectionMemberAccessCache.TryGetCachedRuntimeBoolProperty(module, "Enabled", out bool flag))
                 {
                     enabled = flag;
                     return true;
@@ -432,8 +442,8 @@ namespace ReplayLogger
             try
             {
                 object raw = property != null
-                    ? property.GetValue(null)
-                    : field?.GetValue(null);
+                    ? property.GetCachedValue(null)
+                    : field?.GetCachedValue(null);
 
                 if (raw is bool flag)
                 {
@@ -470,8 +480,8 @@ namespace ReplayLogger
             try
             {
                 object raw = property != null
-                    ? property.GetValue(null)
-                    : field?.GetValue(null);
+                    ? property.GetCachedValue(null)
+                    : field?.GetCachedValue(null);
 
                 if (raw == null)
                 {
@@ -505,14 +515,16 @@ namespace ReplayLogger
 
             try
             {
-                object raw = modulesProperty?.GetValue(null) ?? modulesField?.GetValue(null);
+                object raw = modulesProperty?.GetCachedValue(null) ?? modulesField?.GetCachedValue(null);
                 if (raw is IDictionary dict)
                 {
                     return dict;
                 }
 
-                object value = raw?.GetType().GetProperty("Value", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(raw);
-                return value as IDictionary;
+                if (ReflectionMemberAccessCache.TryGetCachedRuntimePropertyValue(raw, "Value", out object value))
+                {
+                    return value as IDictionary;
+                }
             }
             catch
             {

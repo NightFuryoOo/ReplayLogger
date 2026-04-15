@@ -68,7 +68,7 @@ public class LoadingSprite
         }
         catch (Exception e)
         {
-            Modding.Logger.Log($"Ошибка при вычислении хэша: {e.Message}");
+            global::ReplayLogger.InternalDiagnostics.Info($"Ошибка при вычислении хэша: {e.Message}");
             return "";
         }
     }
@@ -90,3 +90,5 @@ public class LoadingSprite
 
 
 }
+
+

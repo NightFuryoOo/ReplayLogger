@@ -13,8 +13,9 @@ namespace ReplayLogger
         private string initialArenaName;
         private string currentArenaName;
         private long currentBaseUnixTime;
-        private Dictionary<string, string> initialState = new(StringComparer.Ordinal);
-        private Dictionary<string, string> currentState = new(StringComparer.Ordinal);
+        private GearSwitcherState initialState;
+        private GearSwitcherState currentState;
+        private bool hasCurrentState;
         private readonly List<string> changes = new();
 
         private Type settingsType;
@@ -40,8 +41,9 @@ namespace ReplayLogger
             initialArenaName = null;
             currentArenaName = null;
             currentBaseUnixTime = 0;
-            initialState.Clear();
-            currentState.Clear();
+            initialState = default;
+            currentState = default;
+            hasCurrentState = false;
             changes.Clear();
         }
 
@@ -49,29 +51,36 @@ namespace ReplayLogger
         {
             currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
             currentBaseUnixTime = baseUnixTime;
+            long now = baseUnixTime;
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
+            GearSwitcherState snapshot = BuildState();
 
             if (!hasInitialState)
             {
                 hasInitialState = true;
                 initialArenaName = currentArenaName;
-                initialState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                initialState = snapshot;
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            if (currentState.Count == 0)
+            if (!hasCurrentState)
             {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            RecordChanges(snapshot);
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            LogFieldChange("Main Vessel Soul Gain (Value)", currentState.MainSoulGainValue, snapshot.MainSoulGainValue, now);
+            LogFieldChange("Reserve Vessel Soul Gain (Value)", currentState.ReserveSoulGainValue, snapshot.ReserveSoulGainValue, now);
+            LogFieldChange("Main Vessel Soul Gain (In-Game)", currentState.MainSoulGainInGame, snapshot.MainSoulGainInGame, now);
+            LogFieldChange("Reserve Vessel Soul Gain (In-Game)", currentState.ReserveSoulGainInGame, snapshot.ReserveSoulGainInGame, now);
+
+            currentState = snapshot;
         }
 
-        public void Update(string arenaName)
+        public void Update(string arenaName, long nowUnixTime)
         {
             if (!hasInitialState)
             {
@@ -84,20 +93,21 @@ namespace ReplayLogger
                 return;
             }
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
-            if (snapshot.Count == 0)
+            GearSwitcherState snapshot = BuildState();
+            if (!hasCurrentState)
             {
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            if (currentState.Count == 0)
-            {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                return;
-            }
+            long now = nowUnixTime;
+            LogFieldChange("Main Vessel Soul Gain (Value)", currentState.MainSoulGainValue, snapshot.MainSoulGainValue, now);
+            LogFieldChange("Reserve Vessel Soul Gain (Value)", currentState.ReserveSoulGainValue, snapshot.ReserveSoulGainValue, now);
+            LogFieldChange("Main Vessel Soul Gain (In-Game)", currentState.MainSoulGainInGame, snapshot.MainSoulGainInGame, now);
+            LogFieldChange("Reserve Vessel Soul Gain (In-Game)", currentState.ReserveSoulGainInGame, snapshot.ReserveSoulGainInGame, now);
 
-            RecordChanges(snapshot);
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            currentState = snapshot;
         }
 
         public void WriteSection(StreamWriter writer)
@@ -107,78 +117,86 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "  GearSwitcher:");
-            if (!string.IsNullOrEmpty(initialArenaName))
+            List<string> batch = TempObjectPools.RentStringList(changes.Count + 8);
+            try
             {
-                LogWrite.EncryptedLine(writer, $"    Initial Arena: {initialArenaName}");
-            }
-            LogWrite.EncryptedLine(writer, "    State:");
-
-            if (initialState.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (unavailable)");
-            }
-            else
-            {
-                foreach (var entry in initialState)
+                batch.Add("  GearSwitcher:");
+                if (!string.IsNullOrEmpty(initialArenaName))
                 {
-                    LogWrite.EncryptedLine(writer, $"      {entry.Key}: {entry.Value}");
+                    batch.Add($"    Initial Arena: {initialArenaName}");
                 }
-            }
-
-            LogWrite.EncryptedLine(writer, "    Changes:");
-            if (changes.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (none)");
-            }
-            else
-            {
-                foreach (string change in changes)
+                batch.Add("    State:");
+                batch.Add($"      Main Vessel Soul Gain (Value): {FormatOptionalInt(initialState.MainSoulGainValue)}");
+                batch.Add($"      Reserve Vessel Soul Gain (Value): {FormatOptionalInt(initialState.ReserveSoulGainValue)}");
+                batch.Add($"      Main Vessel Soul Gain (In-Game): {FormatOptionalInt(initialState.MainSoulGainInGame)}");
+                batch.Add($"      Reserve Vessel Soul Gain (In-Game): {FormatOptionalInt(initialState.ReserveSoulGainInGame)}");
+                batch.Add("    Changes:");
+                if (changes.Count == 0)
                 {
-                    LogWrite.EncryptedLine(writer, $"      {change}");
+                    batch.Add("      (none)");
                 }
+                else
+                {
+                    foreach (string change in changes)
+                    {
+                        batch.Add($"      {change}");
+                    }
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
-        private void RecordChanges(Dictionary<string, string> snapshot)
+        private GearSwitcherState BuildState()
         {
-            foreach (var entry in snapshot)
-            {
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
+            return new GearSwitcherState(
+                TryGetMainSoulGainValue(out int mainValue) ? new Optional<int>(mainValue) : Optional<int>.None,
+                TryGetReserveSoulGainValue(out int reserveValue) ? new Optional<int>(reserveValue) : Optional<int>.None,
+                TryGetMainSoulGainOverride(out int mainOverride) ? new Optional<int>(mainOverride) : Optional<int>.None,
+                TryGetReserveSoulGainOverride(out int reserveOverride) ? new Optional<int>(reserveOverride) : Optional<int>.None);
         }
 
-        private Dictionary<string, string> BuildSnapshot()
+        private void LogFieldChange(string key, Optional<int> previous, Optional<int> current, long now)
         {
-            Dictionary<string, string> snapshot = new(StringComparer.Ordinal)
+            if (previous == current)
             {
-                ["Main Vessel Soul Gain (Value)"] = TryGetMainSoulGainValue(out int mainValue)
-                    ? mainValue.ToString(CultureInfo.InvariantCulture)
-                    : "N/A",
-                ["Reserve Vessel Soul Gain (Value)"] = TryGetReserveSoulGainValue(out int reserveValue)
-                    ? reserveValue.ToString(CultureInfo.InvariantCulture)
-                    : "N/A",
-                ["Main Vessel Soul Gain (In-Game)"] = TryGetMainSoulGainOverride(out int mainOverride)
-                    ? mainOverride.ToString(CultureInfo.InvariantCulture)
-                    : "N/A",
-                ["Reserve Vessel Soul Gain (In-Game)"] = TryGetReserveSoulGainOverride(out int reserveOverride)
-                    ? reserveOverride.ToString(CultureInfo.InvariantCulture)
-                    : "N/A"
-            };
+                return;
+            }
 
-            return snapshot;
+            string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+        }
+
+        private static string FormatOptionalInt(Optional<int> value)
+        {
+            return value.HasValue
+                ? value.Value.ToString(CultureInfo.InvariantCulture)
+                : "N/A";
+        }
+
+        private readonly struct GearSwitcherState
+        {
+            internal GearSwitcherState(
+                Optional<int> mainSoulGainValue,
+                Optional<int> reserveSoulGainValue,
+                Optional<int> mainSoulGainInGame,
+                Optional<int> reserveSoulGainInGame)
+            {
+                MainSoulGainValue = mainSoulGainValue;
+                ReserveSoulGainValue = reserveSoulGainValue;
+                MainSoulGainInGame = mainSoulGainInGame;
+                ReserveSoulGainInGame = reserveSoulGainInGame;
+            }
+
+            internal Optional<int> MainSoulGainValue { get; }
+            internal Optional<int> ReserveSoulGainValue { get; }
+            internal Optional<int> MainSoulGainInGame { get; }
+            internal Optional<int> ReserveSoulGainInGame { get; }
         }
 
         private bool TryGetMainSoulGainValue(out int value)
@@ -219,7 +237,7 @@ namespace ReplayLogger
             string presetName = null;
             try
             {
-                object rawPreset = gearSwitcherLastPresetProperty?.GetValue(settings);
+                object rawPreset = gearSwitcherLastPresetProperty?.GetCachedValue(settings);
                 presetName = rawPreset?.ToString();
             }
             catch
@@ -229,7 +247,7 @@ namespace ReplayLogger
             IDictionary presets = null;
             try
             {
-                presets = gearSwitcherPresetsProperty?.GetValue(settings) as IDictionary;
+                presets = gearSwitcherPresetsProperty?.GetCachedValue(settings) as IDictionary;
             }
             catch
             {
@@ -267,15 +285,13 @@ namespace ReplayLogger
                 return false;
             }
 
-            const BindingFlags presetFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
             try
             {
-                Type presetType = preset.GetType();
-                PropertyInfo mainProp = presetType.GetProperty("MainSoulGain", presetFlags);
-                PropertyInfo reserveProp = presetType.GetProperty("ReserveSoulGain", presetFlags);
-
-                object mainRaw = mainProp?.GetValue(preset);
-                object reserveRaw = reserveProp?.GetValue(preset);
+                if (!ReflectionMemberAccessCache.TryGetCachedRuntimePropertyValue(preset, "MainSoulGain", out object mainRaw) ||
+                    !ReflectionMemberAccessCache.TryGetCachedRuntimePropertyValue(preset, "ReserveSoulGain", out object reserveRaw))
+                {
+                    return false;
+                }
 
                 if (mainRaw == null || reserveRaw == null)
                 {
@@ -309,7 +325,7 @@ namespace ReplayLogger
 
             try
             {
-                return gearSwitcherProperty?.GetValue(globalSettings);
+                return gearSwitcherProperty?.GetCachedValue(globalSettings);
             }
             catch
             {
@@ -334,7 +350,7 @@ namespace ReplayLogger
 
             try
             {
-                return globalSettingsProperty?.GetValue(null);
+                return globalSettingsProperty?.GetCachedValue(null);
             }
             catch
             {
@@ -383,7 +399,7 @@ namespace ReplayLogger
 
             try
             {
-                object raw = field?.GetValue(null);
+                object raw = field?.GetCachedValue(null);
                 if (raw != null)
                 {
                     value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
@@ -405,7 +421,7 @@ namespace ReplayLogger
 
             try
             {
-                object raw = method?.Invoke(null, null);
+                object raw = method?.InvokeCached(null);
                 if (raw == null)
                 {
                     return false;

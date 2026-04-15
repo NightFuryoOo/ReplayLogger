@@ -280,8 +280,8 @@ namespace ReplayLogger
             try
             {
                 object raw = paleCourtBossProperty != null
-                    ? paleCourtBossProperty.GetValue(null)
-                    : paleCourtBossField.GetValue(null);
+                    ? paleCourtBossProperty.GetCachedValue(null)
+                    : paleCourtBossField.GetCachedValue(null);
 
                 if (raw == null)
                 {
@@ -475,5 +475,4 @@ namespace ReplayLogger
             new HoGStoragePlan(provisionalBucket, sceneName, null);
     }
 }
-
 

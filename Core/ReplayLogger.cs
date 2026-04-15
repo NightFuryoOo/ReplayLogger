@@ -1,11 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using GlobalEnums;
 using System.Globalization;
 using UnityEngine;
-using System.Text.RegularExpressions;
 using System.Reflection;
 
 namespace ReplayLogger
@@ -22,6 +21,7 @@ namespace ReplayLogger
             { (int)Charm.BoonOfHallownest, "Boon of Hallownest" },
             { (int)Charm.AbyssalBloom, "Abyssal Bloom" }
         };
+        private static readonly Dictionary<string, FieldInfo> PlayerDataIntFieldCache = new(StringComparer.Ordinal);
 
         public static IReadOnlyList<string> GetEncryptedModSnapshot(string modsDir)
         {
@@ -44,16 +44,33 @@ namespace ReplayLogger
             {
                 return;
             }
-            foreach (string line in GetEncryptedModSnapshot(modsDir))
+
+            IReadOnlyList<string> snapshot = GetEncryptedModSnapshot(modsDir);
+            bool hasSeparator = !string.IsNullOrEmpty(separatorAfter);
+            if (snapshot.Count == 0 && !hasSeparator)
             {
-                LogWrite.EncryptedLine(writer, line);
+                return;
             }
 
-            if (!string.IsNullOrEmpty(separatorAfter))
+            List<string> batch = TempObjectPools.RentStringList(snapshot.Count + (hasSeparator ? 1 : 0));
+            try
             {
-                LogWrite.EncryptedLine(writer, separatorAfter);
-            }
+                for (int i = 0; i < snapshot.Count; i++)
+                {
+                    batch.Add(snapshot[i]);
+                }
 
+                if (hasSeparator)
+                {
+                    batch.Add(separatorAfter);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringList(batch);
+            }
         }
 
         public static string BuildEquippedCharmsLine()
@@ -98,14 +115,36 @@ namespace ReplayLogger
                 }
             }
 
-            if (BossSequenceController.BoundCharms)
-            {
-                builder.Append(" => BOUND CHARMS");
-            }
-            else if (builder.Length > initialLength)
+            bool hasAnyCharms = builder.Length > initialLength;
+            if (hasAnyCharms)
             {
                 builder.Length -= 2;
-                builder.Append($" | Total Cost: {totalCost}");
+            }
+            else
+            {
+                builder.Append("NO CHARMS");
+            }
+
+            builder.Append($" | Total Cost: {totalCost}");
+
+            if (BossSequenceController.BoundNail)
+            {
+                builder.Append(" [Nail]");
+            }
+
+            if (BossSequenceController.BoundShell)
+            {
+                builder.Append(" [Shell]");
+            }
+
+            if (BossSequenceController.BoundCharms)
+            {
+                builder.Append(" [Charms]");
+            }
+
+            if (BossSequenceController.BoundSoul)
+            {
+                builder.Append(" [Soul]");
             }
 
             builder.Append('\n');
@@ -154,19 +193,31 @@ namespace ReplayLogger
             }
 
             IReadOnlyList<string> skills = BuildSkillLines();
-            if (skills.Count > 0)
+            bool hasSeparator = !string.IsNullOrEmpty(separatorAfter);
+            if (skills.Count == 0 && !hasSeparator)
             {
-                foreach (string line in skills)
+                return;
+            }
+
+            List<string> batch = TempObjectPools.RentStringList(skills.Count + (hasSeparator ? 1 : 0));
+            try
+            {
+                for (int i = 0; i < skills.Count; i++)
                 {
-                    LogWrite.EncryptedLine(writer, line);
+                    batch.Add(skills[i]);
                 }
-            }
 
-            if (!string.IsNullOrEmpty(separatorAfter))
+                if (hasSeparator)
+                {
+                    batch.Add(separatorAfter);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
             {
-                LogWrite.EncryptedLine(writer, separatorAfter);
+                TempObjectPools.ReturnStringList(batch);
             }
-
         }
 
         public static void WriteDamageInvSection(StreamWriter writer, IEnumerable<string> logs, string separatorAfter = "---------------------------------------------------")
@@ -176,21 +227,29 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE INV------------------------\n");
-
-            if (logs != null)
+            List<string> batch = TempObjectPools.RentStringList();
+            try
             {
-                foreach (string log in logs)
+                batch.Add("\n------------------------DAMAGE INV------------------------\n");
+                if (logs != null)
                 {
-                    LogWrite.EncryptedLine(writer, log);
+                    foreach (string log in logs)
+                    {
+                        batch.Add(log);
+                    }
                 }
-            }
 
-            if (!string.IsNullOrEmpty(separatorAfter))
+                if (!string.IsNullOrEmpty(separatorAfter))
+                {
+                    batch.Add(separatorAfter);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
             {
-                LogWrite.EncryptedLine(writer, separatorAfter);
+                TempObjectPools.ReturnStringList(batch);
             }
-
         }
 
         public static void WriteDamageInvSection(StreamWriter writer, BufferedLogSection logs, string separatorAfter = "---------------------------------------------------")
@@ -228,19 +287,31 @@ namespace ReplayLogger
             }
 
             IReadOnlyList<string> noBlurSettings = NoBlurIntegration.GetSettingsLines();
-            if (noBlurSettings.Count > 0)
+            if (noBlurSettings.Count == 0)
             {
-                foreach (string line in noBlurSettings)
-                {
-                    LogWrite.EncryptedLine(writer, line);
-                }
-
-                LogWrite.EncryptedLine(writer, string.Empty);
+                return;
             }
 
-            if (!string.IsNullOrEmpty(separator) && noBlurSettings.Count > 0)
+            bool hasSeparator = !string.IsNullOrEmpty(separator);
+            List<string> batch = TempObjectPools.RentStringList(noBlurSettings.Count + (hasSeparator ? 2 : 1));
+            try
             {
-                LogWrite.EncryptedLine(writer, separator);
+                for (int i = 0; i < noBlurSettings.Count; i++)
+                {
+                    batch.Add(noBlurSettings[i]);
+                }
+
+                batch.Add(string.Empty);
+                if (hasSeparator)
+                {
+                    batch.Add(separator);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
@@ -252,19 +323,31 @@ namespace ReplayLogger
             }
 
             IReadOnlyList<string> caSettings = CustomizableAbilitiesIntegration.GetSettingsLines();
-            if (caSettings.Count > 0)
+            if (caSettings.Count == 0)
             {
-                foreach (string line in caSettings)
-                {
-                    LogWrite.EncryptedLine(writer, line);
-                }
-
-                LogWrite.EncryptedLine(writer, string.Empty);
+                return;
             }
 
-            if (!string.IsNullOrEmpty(separator) && caSettings.Count > 0)
+            bool hasSeparator = !string.IsNullOrEmpty(separator);
+            List<string> batch = TempObjectPools.RentStringList(caSettings.Count + (hasSeparator ? 2 : 1));
+            try
             {
-                LogWrite.EncryptedLine(writer, separator);
+                for (int i = 0; i < caSettings.Count; i++)
+                {
+                    batch.Add(caSettings[i]);
+                }
+
+                batch.Add(string.Empty);
+                if (hasSeparator)
+                {
+                    batch.Add(separator);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
@@ -275,25 +358,35 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "CONTROL:");
-
             IReadOnlyList<string> lines = BuildControlLines();
-            if (lines.Count == 0)
+            bool hasSeparator = !string.IsNullOrEmpty(separator);
+            List<string> batch = TempObjectPools.RentStringList(lines.Count + (hasSeparator ? 3 : 2));
+            try
             {
-                LogWrite.EncryptedLine(writer, "  (unavailable)");
-            }
-            else
-            {
-                foreach (string line in lines)
+                batch.Add("CONTROL:");
+                if (lines.Count == 0)
                 {
-                    LogWrite.EncryptedLine(writer, line);
+                    batch.Add("  (unavailable)");
                 }
-            }
+                else
+                {
+                    for (int i = 0; i < lines.Count; i++)
+                    {
+                        batch.Add(lines[i]);
+                    }
+                }
 
-            LogWrite.EncryptedLine(writer, string.Empty);
-            if (!string.IsNullOrEmpty(separator))
+                batch.Add(string.Empty);
+                if (hasSeparator)
+                {
+                    batch.Add(separator);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
             {
-                LogWrite.EncryptedLine(writer, separator);
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
@@ -483,7 +576,7 @@ namespace ReplayLogger
             {
                 try
                 {
-                    return prop.GetValue(instance);
+                    return prop.GetCachedValue(instance);
                 }
                 catch
                 {
@@ -496,7 +589,7 @@ namespace ReplayLogger
             {
                 try
                 {
-                    return field.GetValue(instance);
+                    return field.GetCachedValue(instance);
                 }
                 catch
                 {
@@ -563,20 +656,29 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "Warnings:");
-            if (warnings != null)
+            List<string> batch = TempObjectPools.RentStringList();
+            try
             {
-                foreach (string warning in warnings)
+                batch.Add("Warnings:");
+                if (warnings != null)
                 {
-                    LogWrite.EncryptedLine(writer, warning);
+                    foreach (string warning in warnings)
+                    {
+                        batch.Add(warning);
+                    }
                 }
-            }
 
-            if (!string.IsNullOrEmpty(separatorAfter))
+                if (!string.IsNullOrEmpty(separatorAfter))
+                {
+                    batch.Add(separatorAfter);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
             {
-                LogWrite.EncryptedLine(writer, separatorAfter);
+                TempObjectPools.ReturnStringList(batch);
             }
-
         }
 
         public static void WriteWarningsSection(StreamWriter writer, BufferedLogSection warnings, string separatorAfter = "---------------------------------------------------")
@@ -603,20 +705,29 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "SpeedWarn:");
-            if (warnings != null)
+            List<string> batch = TempObjectPools.RentStringList();
+            try
             {
-                foreach (string warning in warnings)
+                batch.Add("SpeedWarn:");
+                if (warnings != null)
                 {
-                    LogWrite.EncryptedLine(writer, warning);
+                    foreach (string warning in warnings)
+                    {
+                        batch.Add(warning);
+                    }
                 }
-            }
 
-            if (!string.IsNullOrEmpty(separatorAfter))
+                if (!string.IsNullOrEmpty(separatorAfter))
+                {
+                    batch.Add(separatorAfter);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
             {
-                LogWrite.EncryptedLine(writer, separatorAfter);
+                TempObjectPools.ReturnStringList(batch);
             }
-
         }
 
         public static void WriteSpeedWarningsSection(StreamWriter writer, BufferedLogSection warnings, string separatorAfter = "---------------------------------------------------")
@@ -662,12 +773,53 @@ namespace ReplayLogger
                 {
                     36 => data.charmCost_36,
                     40 => data.charmCost_40,
-                    _ => data.GetIntInternal($"charmCost_{charmId}")
+                    _ => TryGetPlayerDataInt(data, $"charmCost_{charmId}", out int reflectedCost) ? reflectedCost : -1
                 };
             }
             catch
             {
                 return -1;
+            }
+        }
+
+        private static bool TryGetPlayerDataInt(PlayerData data, string fieldName, out int value)
+        {
+            value = -1;
+            if (data == null || string.IsNullOrWhiteSpace(fieldName))
+            {
+                return false;
+            }
+
+            if (!PlayerDataIntFieldCache.TryGetValue(fieldName, out FieldInfo field))
+            {
+                field = typeof(PlayerData).GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field != null && field.FieldType != typeof(int))
+                {
+                    field = null;
+                }
+
+                PlayerDataIntFieldCache[fieldName] = field;
+            }
+
+            if (field == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                object raw = field.GetCachedValue(data);
+                if (raw is int intValue)
+                {
+                    value = intValue;
+                    return true;
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -698,7 +850,6 @@ namespace ReplayLogger
         private const float TimeScaleTolerance = 0.001f;
         private readonly List<string> warnings = new();
 
-        private float lastLoggedTimeScale = 1f;
         private float defaultTimeScale = 1f;
         private bool speedDeviationActive;
         private bool speedWarningIssued;
@@ -710,7 +861,6 @@ namespace ReplayLogger
         public void Reset(float currentScale)
         {
             float clamped = Mathf.Max(currentScale, 0f);
-            lastLoggedTimeScale = clamped;
             defaultTimeScale = clamped;
             ResetDeviationTracking();
         }
@@ -719,13 +869,18 @@ namespace ReplayLogger
 
         public void LogInitial(StreamWriter writer, long lastUnixTime)
         {
-            WriteTimeScaleChange(writer, lastUnixTime, lastLoggedTimeScale, true);
+            // Intentionally left blank: we only keep SpeedWarn entries.
         }
 
         public void Update(StreamWriter writer, string arenaName, long lastUnixTime)
         {
+            Update(writer, arenaName, lastUnixTime, DateTimeOffset.Now.ToUnixTimeMilliseconds());
+        }
+
+        public void Update(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime)
+        {
             float currentScale = Mathf.Max(Time.timeScale, 0f);
-            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long now = nowUnixTime;
 
             if (Mathf.Abs(currentScale - defaultTimeScale) < TimeScaleTolerance)
             {
@@ -747,24 +902,6 @@ namespace ReplayLogger
                 }
             }
 
-            if (Mathf.Abs(currentScale - lastLoggedTimeScale) >= TimeScaleTolerance)
-            {
-                lastLoggedTimeScale = currentScale;
-                WriteTimeScaleChange(writer, lastUnixTime, currentScale, false);
-            }
-        }
-
-        private void WriteTimeScaleChange(StreamWriter writer, long lastUnixTime, float scale, bool initial)
-        {
-            if (writer == null || !initial)
-            {
-                return;
-            }
-
-            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            string label = initial ? "GameSpeedStart" : "GameSpeedChange";
-            string entry = $"{label}|+{unixTime - lastUnixTime}|{(scale * 100f):F0}% ({scale:F3})";
-            LogWrite.EncryptedLine(writer, entry);
         }
 
         private void LogSpeedWarning(StreamWriter writer, string arenaName, long lastUnixTime, float currentScale, long now)
@@ -775,9 +912,6 @@ namespace ReplayLogger
             }
 
             double durationSeconds = (now - speedDeviationStartUnix) / 1000.0;
-            string entry = $"SpeedWarn|+{now - lastUnixTime}|Default {(defaultTimeScale * 100f):F0}% ({defaultTimeScale:F3}) -> {(currentScale * 100f):F0}% ({currentScale:F3})|Duration {durationSeconds.ToString("F2", CultureInfo.InvariantCulture)}s";
-            LogWrite.EncryptedLine(writer, entry);
-
             CoreSessionLogger.AddSpeedWarning(warnings, arenaName, now - lastUnixTime, defaultTimeScale, currentScale, durationSeconds);
         }
 
@@ -798,6 +932,7 @@ namespace ReplayLogger
         private bool boundHpLogged;
         private static FieldInfo boundShellField;
         private static PropertyInfo boundShellProperty;
+        private static Func<bool> boundShellGetter;
         private static bool boundShellLookupFailed;
 
         public IReadOnlyList<string> Warnings => warnings;
@@ -812,32 +947,49 @@ namespace ReplayLogger
 
         public void ClearWarnings() => warnings.Clear();
 
-        public void Update(StreamWriter writer, string arenaName, long lastUnixTime)
+        public void LogDamageEvent(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, int hazardType, int damageAmount)
+        {
+            if (writer == null || damageAmount <= 0)
+            {
+                return;
+            }
+
+            _ = hazardType;
+            CaptureHealthState(arenaName, lastUnixTime, nowUnixTime, writer);
+        }
+
+        public void LogDeathEvent(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime)
         {
             if (writer == null)
             {
                 return;
             }
 
-            PlayerData data = PlayerData.instance;
-            if (data == null)
+            CaptureHealthState(arenaName, lastUnixTime, nowUnixTime, writer);
+        }
+
+        public void Update(StreamWriter writer, string arenaName, long lastUnixTime)
+        {
+            Update(writer, arenaName, lastUnixTime, DateTimeOffset.Now.ToUnixTimeMilliseconds());
+        }
+
+        public void Update(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime)
+        {
+            if (writer == null)
             {
                 return;
             }
 
             bool boundShellActive = IsBoundShellActive();
-            int lifeblood = Mathf.Max(0, data.healthBlue);
             if (boundShellActive && !boundHpLogged)
             {
-                LogBoundHpApplied(writer, lastUnixTime, lifeblood);
                 boundHpLogged = true;
             }
 
-            TrackMasks(writer, arenaName, lastUnixTime, data.health, boundShellActive);
-            TrackLifeblood(writer, arenaName, lastUnixTime, lifeblood);
+            CaptureHealthState(arenaName, lastUnixTime, nowUnixTime, writer, boundShellActive);
         }
 
-        private void TrackMasks(StreamWriter writer, string arenaName, long lastUnixTime, int currentHealth, bool boundShellActive)
+        private void TrackMasks(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, int currentHealth, bool boundShellActive)
         {
             if (!lastHealth.HasValue)
             {
@@ -854,18 +1006,18 @@ namespace ReplayLogger
             if (currentHealth < lastHealth.Value)
             {
                 int lost = lastHealth.Value - currentHealth;
-                LogMaskChange(writer, arenaName, lastUnixTime, lastHealth.Value, currentHealth, -lost);
+                LogMaskChange(writer, arenaName, lastUnixTime, nowUnixTime, lastHealth.Value, currentHealth, -lost);
             }
             else if (currentHealth > lastHealth.Value)
             {
                 int gained = currentHealth - lastHealth.Value;
-                LogMaskChange(writer, arenaName, lastUnixTime, lastHealth.Value, currentHealth, gained);
+                LogMaskChange(writer, arenaName, lastUnixTime, nowUnixTime, lastHealth.Value, currentHealth, gained);
             }
 
             lastHealth = currentHealth;
         }
 
-        private void TrackLifeblood(StreamWriter writer, string arenaName, long lastUnixTime, int currentLifeblood)
+        private void TrackLifeblood(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, int currentLifeblood)
         {
             if (!lastLifeblood.HasValue)
             {
@@ -876,51 +1028,53 @@ namespace ReplayLogger
             if (currentLifeblood < lastLifeblood.Value)
             {
                 int lostBlue = lastLifeblood.Value - currentLifeblood;
-                LogLifebloodChange(writer, arenaName, lastUnixTime, lastLifeblood.Value, currentLifeblood, -lostBlue);
+                LogLifebloodChange(writer, arenaName, lastUnixTime, nowUnixTime, lastLifeblood.Value, currentLifeblood, -lostBlue);
             }
             else if (currentLifeblood > lastLifeblood.Value)
             {
                 int gainedBlue = currentLifeblood - lastLifeblood.Value;
-                LogLifebloodChange(writer, arenaName, lastUnixTime, lastLifeblood.Value, currentLifeblood, gainedBlue);
+                LogLifebloodChange(writer, arenaName, lastUnixTime, nowUnixTime, lastLifeblood.Value, currentLifeblood, gainedBlue);
             }
 
             lastLifeblood = currentLifeblood;
         }
 
-        private void LogMaskChange(StreamWriter writer, string arenaName, long lastUnixTime, int prev, int current, int delta)
+        private void LogMaskChange(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, int prev, int current, int delta)
         {
-            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long unixTime = nowUnixTime;
             string sign = delta >= 0 ? "+" : string.Empty;
-            string entry = delta >= 0
-                ? $"Heal|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} mask(s)"
-                : $"HitWarn|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} mask(s)";
-
-            LogWrite.EncryptedLine(writer, entry);
-
             string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
             string warnEntry = $"|{arena}|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} mask(s)";
             warnings.Add(warnEntry);
         }
 
-        private void LogLifebloodChange(StreamWriter writer, string arenaName, long lastUnixTime, int prev, int current, int delta)
+        private void LogLifebloodChange(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, int prev, int current, int delta)
         {
-            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long unixTime = nowUnixTime;
             string sign = delta >= 0 ? "+" : string.Empty;
-            string entry = delta >= 0
-                ? $"Heal|Lifeblood|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta}"
-                : $"HitWarn|Lifeblood|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} lifeblood";
-
-            LogWrite.EncryptedLine(writer, entry);
-
             string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
             string warnEntry = $"|{arena}|+{unixTime - lastUnixTime}|Lifeblood {prev}->{current}|{sign}{delta}";
             warnings.Add(warnEntry);
         }
 
-        private static void LogBoundHpApplied(StreamWriter writer, long lastUnixTime, int lifeblood)
+        private void CaptureHealthState(string arenaName, long lastUnixTime, long nowUnixTime, StreamWriter writer)
         {
-            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            LogWrite.EncryptedLine(writer, $"Bound HP applied: max=4 (+Lifeblood {lifeblood})|+{unixTime - lastUnixTime}");
+            CaptureHealthState(arenaName, lastUnixTime, nowUnixTime, writer, IsBoundShellActive());
+        }
+
+        private void CaptureHealthState(string arenaName, long lastUnixTime, long nowUnixTime, StreamWriter writer, bool boundShellActive)
+        {
+            PlayerData data = PlayerData.instance;
+            if (data == null)
+            {
+                return;
+            }
+
+            int currentHealth = Mathf.Max(0, data.health);
+            int currentLifeblood = Mathf.Max(0, data.healthBlue);
+
+            TrackMasks(writer, arenaName, lastUnixTime, nowUnixTime, currentHealth, boundShellActive);
+            TrackLifeblood(writer, arenaName, lastUnixTime, nowUnixTime, currentLifeblood);
         }
 
         private static bool ShouldSuppressBoundMaskChange(int previousHealth, int currentHealth)
@@ -941,7 +1095,7 @@ namespace ReplayLogger
                 return false;
             }
 
-            if (boundShellField == null && boundShellProperty == null)
+            if (boundShellGetter == null)
             {
                 const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
                 Type type = typeof(BossSequenceController);
@@ -952,14 +1106,25 @@ namespace ReplayLogger
                     boundShellLookupFailed = true;
                     return false;
                 }
+
+                if (boundShellProperty != null)
+                {
+                    boundShellGetter = () => boundShellProperty.GetCachedValue(null) is bool value && value;
+                }
+                else if (boundShellField != null)
+                {
+                    boundShellGetter = () => boundShellField.GetCachedValue(null) is bool value && value;
+                }
+                else
+                {
+                    boundShellLookupFailed = true;
+                    return false;
+                }
             }
 
             try
             {
-                object raw = boundShellProperty != null
-                    ? boundShellProperty.GetValue(null)
-                    : boundShellField?.GetValue(null);
-                return raw is bool flag && flag;
+                return boundShellGetter();
             }
             catch
             {
@@ -970,17 +1135,23 @@ namespace ReplayLogger
 
     public sealed class DamageChangeTracker
     {
-        private readonly Dictionary<string, HashSet<int>> damageValuesByOwner = new();
-        private readonly Dictionary<string, HashSet<float>> multiplierValuesByOwner = new();
+        private readonly Dictionary<string, OwnerDamageState> ownerStatesByKey = new(StringComparer.Ordinal);
         private readonly List<string> changes = new();
+        private readonly List<DamageChangeEntry> entries = new();
 
         public IReadOnlyList<string> Changes => changes;
 
         public void Reset()
         {
-            damageValuesByOwner.Clear();
-            multiplierValuesByOwner.Clear();
+            ownerStatesByKey.Clear();
             changes.Clear();
+            entries.Clear();
+        }
+
+        public void Track(int ownerId, string ownerName, string sceneName, long deltaMs, int damageDealt, float multiplier)
+        {
+            _ = ownerId;
+            Track(ownerName, sceneName, deltaMs, damageDealt, multiplier);
         }
 
         public void Track(string ownerName, string sceneName, long deltaMs, int damageDealt, float multiplier)
@@ -990,29 +1161,54 @@ namespace ReplayLogger
                 return;
             }
 
-            if (!damageValuesByOwner.TryGetValue(ownerName, out HashSet<int> damages))
+            string normalizedSceneName = string.IsNullOrEmpty(sceneName) ? "UnknownScene" : sceneName;
+            string ownerStateKey = BuildOwnerStateKey(ownerName);
+            if (!ownerStatesByKey.TryGetValue(ownerStateKey, out OwnerDamageState ownerState) ||
+                ownerState == null)
             {
-                damages = new HashSet<int>();
-                damageValuesByOwner[ownerName] = damages;
+                ownerState = new OwnerDamageState(ownerName);
+                ownerStatesByKey[ownerStateKey] = ownerState;
             }
 
-            if (!multiplierValuesByOwner.TryGetValue(ownerName, out HashSet<float> multipliers))
-            {
-                multipliers = new HashSet<float>();
-                multiplierValuesByOwner[ownerName] = multipliers;
-            }
-
-            bool newDamage = damages.Add(damageDealt);
+            int finalDamage = CalculateFinalDamage(damageDealt, multiplier);
+            bool newDamage = ownerState.UniqueDamages.Add(finalDamage);
             if (newDamage)
             {
-                changes.Add($"Add NEW unique damage: {ownerName}-{sceneName}/{deltaMs} #{damageDealt}");
+                string line = $"Add NEW unique damage: {ownerName}-{normalizedSceneName}/{deltaMs} #{finalDamage}";
+                changes.Add(line);
+                entries.Add(new DamageChangeEntry(ownerName, line));
+            }
+        }
+
+        private static int CalculateFinalDamage(int damageDealt, float multiplier)
+        {
+            int baseDamage = Math.Max(0, damageDealt);
+            if (baseDamage == 0)
+            {
+                return 0;
             }
 
-            bool newMultiplier = multipliers.Add(multiplier);
-            if (newMultiplier)
+            float normalizedMultiplier = float.IsNaN(multiplier) || float.IsInfinity(multiplier)
+                ? 1f
+                : Mathf.Max(0f, multiplier);
+
+            if (Mathf.Approximately(normalizedMultiplier, 1f))
             {
-                changes.Add($"Add NEW unique multiplier: {ownerName}-{sceneName}/{deltaMs} #{multiplier}");
+                return baseDamage;
             }
+
+            double scaled = baseDamage * normalizedMultiplier;
+            if (scaled <= 0d)
+            {
+                return 0;
+            }
+
+            return Math.Max(0, (int)Math.Round(scaled, MidpointRounding.AwayFromZero));
+        }
+
+        private static string BuildOwnerStateKey(string ownerName)
+        {
+            return ownerName ?? string.Empty;
         }
 
         public static Dictionary<string, List<string>> SortLogsByObjectName(IEnumerable<string> logs)
@@ -1050,34 +1246,144 @@ namespace ReplayLogger
             }
 
             LogWrite.EncryptedLine(writer, "DamageChange:");
-            foreach (var entry in SortLogsByObjectName(tracker.Changes))
+            Dictionary<string, List<string>> groupedLogs = TempObjectPools.RentLogGroupMap();
+            try
             {
-                LogWrite.EncryptedLine(writer, $"{entry.Key}:");
-                foreach (string log in entry.Value)
+                FillSortedLogsByOwner(tracker.entries, groupedLogs);
+                foreach (KeyValuePair<string, List<string>> entry in groupedLogs)
                 {
-                    LogWrite.EncryptedLine(writer, $"  {log}");
+                    LogWrite.EncryptedLine(writer, $"{entry.Key}:");
+                    foreach (string log in entry.Value)
+                    {
+                        LogWrite.EncryptedLine(writer, $"  {log}");
+                    }
+                    LogWrite.EncryptedLine(writer, "\n");
                 }
-                LogWrite.EncryptedLine(writer, "\n");
+            }
+            finally
+            {
+                TempObjectPools.ReturnLogGroupMap(groupedLogs, returnNestedLists: true);
             }
 
             LogWrite.EncryptedLine(writer, "---------------------------------------------------");
         }
 
+        private static void FillSortedLogsByOwner(IReadOnlyList<DamageChangeEntry> sourceEntries, Dictionary<string, List<string>> groupedLogs)
+        {
+            groupedLogs.Clear();
+            if (sourceEntries == null || sourceEntries.Count == 0)
+            {
+                return;
+            }
+
+            for (int i = 0; i < sourceEntries.Count; i++)
+            {
+                DamageChangeEntry entry = sourceEntries[i];
+                if (string.IsNullOrEmpty(entry.OwnerName) || string.IsNullOrEmpty(entry.Log))
+                {
+                    continue;
+                }
+
+                if (!groupedLogs.TryGetValue(entry.OwnerName, out List<string> list))
+                {
+                    list = TempObjectPools.RentGroupList();
+                    groupedLogs[entry.OwnerName] = list;
+                }
+
+                list.Add(entry.Log);
+            }
+        }
+
+        private static void FillSortedLogsByObjectName(IEnumerable<string> logs, Dictionary<string, List<string>> groupedLogs)
+        {
+            groupedLogs.Clear();
+            if (logs == null)
+            {
+                return;
+            }
+
+            foreach (string log in logs)
+            {
+                string objectName = ExtractObjectName(log);
+                if (objectName == null)
+                {
+                    continue;
+                }
+
+                if (!groupedLogs.TryGetValue(objectName, out List<string> list))
+                {
+                    list = TempObjectPools.RentGroupList();
+                    groupedLogs[objectName] = list;
+                }
+
+                list.Add(log);
+            }
+        }
+
         private static string ExtractObjectName(string log)
         {
-            string pattern = @"^Add NEW unique (?:damage|multiplier): (.*?)-";
-            Match match = Regex.Match(log, pattern);
-
-            if (match.Success)
+            if (string.IsNullOrEmpty(log))
             {
-                return match.Groups[1].Value.Trim();
+                return null;
             }
-            return null;
+
+            const string damagePrefix = "Add NEW unique damage: ";
+            const string multiplierPrefix = "Add NEW unique multiplier: ";
+            int ownerStart;
+            if (log.StartsWith(damagePrefix, StringComparison.Ordinal))
+            {
+                ownerStart = damagePrefix.Length;
+            }
+            else if (log.StartsWith(multiplierPrefix, StringComparison.Ordinal))
+            {
+                ownerStart = multiplierPrefix.Length;
+            }
+            else
+            {
+                return null;
+            }
+
+            int ownerEnd = log.IndexOf('-', ownerStart);
+            if (ownerEnd <= ownerStart)
+            {
+                return null;
+            }
+
+            string owner = log.Substring(ownerStart, ownerEnd - ownerStart).Trim();
+            return owner.Length == 0 ? null : owner;
+        }
+
+        private readonly struct DamageChangeEntry
+        {
+            internal DamageChangeEntry(string ownerName, string log)
+            {
+                OwnerName = ownerName;
+                Log = log;
+            }
+
+            internal string OwnerName { get; }
+            internal string Log { get; }
+        }
+
+        private sealed class OwnerDamageState
+        {
+            internal OwnerDamageState(string ownerName)
+            {
+                OwnerName = ownerName;
+                UniqueDamages = new HashSet<int>();
+            }
+
+            internal string OwnerName { get; }
+            internal HashSet<int> UniqueDamages { get; }
         }
     }
 
     public sealed class FlukenestTracker
     {
+        private const string FlukenestDamageOwnerName = "Knight/Spells/Flukenest";
+        private static readonly FieldInfo flukeDamageFieldStatic =
+            typeof(SpellFluke).GetField("damage", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
         private readonly List<string> entries = new();
         private int? lastDamage;
         private readonly FieldInfo flukeDamageField =
@@ -1101,7 +1407,7 @@ namespace ReplayLogger
             int damage = 0;
             try
             {
-                object raw = flukeDamageField.GetValue(self);
+                object raw = flukeDamageField.GetCachedValue(self);
                 if (raw is int intDamage)
                 {
                     damage = intDamage;
@@ -1159,29 +1465,79 @@ namespace ReplayLogger
             }
         }
 
-        public static void TrackGlobal(bool isLogging, StreamWriter writer, FlukenestTracker tracker, string arenaName, long lastUnixTime, SpellFluke self, GameObject target)
+        public static void TrackGlobal(bool isLogging, StreamWriter writer, FlukenestTracker tracker, string arenaName, long lastUnixTime, long nowUnixTime, SpellFluke self, GameObject target)
         {
             if (!isLogging || writer == null || tracker == null)
             {
                 return;
             }
 
-            long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
             tracker.Track(target, arenaName, unixTime - lastUnixTime, self);
         }
 
-        public static void HandleDoDamage(bool isLogging, StreamWriter writer, FlukenestTracker tracker, string arenaName, long lastUnixTime, On.SpellFluke.orig_DoDamage orig, SpellFluke self, GameObject obj, int upwardRecursionAmount, bool burst)
+        public static void HandleDoDamage(bool isLogging, StreamWriter writer, FlukenestTracker tracker, string arenaName, long lastUnixTime, long nowUnixTime, On.SpellFluke.orig_DoDamage orig, SpellFluke self, GameObject obj, int upwardRecursionAmount, bool burst)
         {
             try
             {
-                TrackGlobal(isLogging, writer, tracker, arenaName, lastUnixTime, self, obj);
+                TrackGlobal(isLogging, writer, tracker, arenaName, lastUnixTime, nowUnixTime, self, obj);
             }
             catch (Exception e)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: failed to log Flukenest damage: {e.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to log Flukenest damage: {e.Message}");
             }
 
             orig(self, obj, upwardRecursionAmount, burst);
         }
+
+        public static void HandleDoDamage(bool isLogging, StreamWriter writer, DamageChangeTracker damageChangeTracker, string arenaName, long lastUnixTime, long nowUnixTime, On.SpellFluke.orig_DoDamage orig, SpellFluke self, GameObject obj, int upwardRecursionAmount, bool burst)
+        {
+            try
+            {
+                TrackAsDamageChange(isLogging, writer, damageChangeTracker, arenaName, lastUnixTime, nowUnixTime, self);
+            }
+            catch (Exception e)
+            {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to track Flukenest in DamageChange: {e.Message}");
+            }
+
+            orig(self, obj, upwardRecursionAmount, burst);
+        }
+
+        private static void TrackAsDamageChange(bool isLogging, StreamWriter writer, DamageChangeTracker damageChangeTracker, string arenaName, long lastUnixTime, long nowUnixTime, SpellFluke self)
+        {
+            if (!isLogging || writer == null || damageChangeTracker == null || self == null)
+            {
+                return;
+            }
+
+            if (flukeDamageFieldStatic == null)
+            {
+                return;
+            }
+
+            int damage;
+            try
+            {
+                object raw = flukeDamageFieldStatic.GetCachedValue(self);
+                if (raw is not int intDamage || intDamage <= 0)
+                {
+                    return;
+                }
+
+                damage = intDamage;
+            }
+            catch
+            {
+                return;
+            }
+
+            long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            damageChangeTracker.Track(FlukenestDamageOwnerName, scene, unixTime - lastUnixTime, damage, 1f);
+        }
     }
 }
+
+
+

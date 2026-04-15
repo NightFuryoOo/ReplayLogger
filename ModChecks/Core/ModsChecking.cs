@@ -1,15 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Configuration;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading.Tasks;
 using Modding;
+using Mono.Cecil;
 
 namespace ReplayLogger
 {
@@ -18,11 +15,28 @@ namespace ReplayLogger
         private static readonly string[] PaleCourtDllNames = { "PaleCourt.dll", "FiveKnights.dll" };
         private static readonly string[] PaleCourtDirectoryHints = { "palecourt", "fiveknights" };
 
+        private static readonly string[] KnownDependencyPrefixes =
+        {
+            "MMHOOK_",
+            "Assembly-CSharp",
+            "PlayMaker",
+            "Unity",
+            "System",
+            "mscorlib",
+            "netstandard",
+            "Mono.",
+            "MonoMod",
+            "Newtonsoft",
+            "Satchel"
+        };
+
         private const int MiniHashChunkSize = 4096;
         private static readonly object ModScanLock = new();
         private static string cachedModsDirectory;
         private static string cachedModsFingerprint;
         private static List<string> cachedModsSnapshot;
+        private static readonly Dictionary<string, CachedMetadataInfo> cachedMetadataByDllPath = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, CachedHashInfo> cachedSha256ByDllPath = new(StringComparer.OrdinalIgnoreCase);
 
         private static CachedModInfo cachedPaleCourtInfo;
         private static bool paleCourtCacheAttempted;
@@ -30,8 +44,31 @@ namespace ReplayLogger
         private sealed class CachedModInfo
         {
             public string DirectoryPath;
+            public string DllPath;
+            public string DllSignature;
             public string ModName;
             public string Version;
+            public string Hash;
+        }
+
+        private sealed class ModAssemblyMetadata
+        {
+            public string DllPath;
+            public string DllSignature;
+            public string ModName;
+            public string Version;
+            public bool HasModEntry;
+        }
+
+        private sealed class CachedMetadataInfo
+        {
+            public string DllSignature;
+            public ModAssemblyMetadata Metadata;
+        }
+
+        private sealed class CachedHashInfo
+        {
+            public string DllSignature;
             public string Hash;
         }
 
@@ -42,6 +79,8 @@ namespace ReplayLogger
             cachedModsDirectory = null;
             cachedModsFingerprint = null;
             cachedModsSnapshot = null;
+            cachedMetadataByDllPath.Clear();
+            cachedSha256ByDllPath.Clear();
         }
 
         public static void PrimeHeavyModCache(string modsDir)
@@ -58,6 +97,7 @@ namespace ReplayLogger
 
             lock (ModScanLock)
             {
+                EnsurePaleCourtCache(modsDir);
                 string fingerprint = BuildModsFingerprint(modsDir);
                 if (!string.IsNullOrEmpty(fingerprint)
                     && cachedModsSnapshot != null
@@ -81,8 +121,8 @@ namespace ReplayLogger
             List<string> unregisteredMods = new();
 
             List<string> modDirectories = Directory.GetDirectories(modsDir)
-                .Where(dir => !Path.GetFileName(dir).Equals("Disabled", StringComparison.OrdinalIgnoreCase) &&
-                               !Path.GetFileName(dir).Equals("Vasi", StringComparison.OrdinalIgnoreCase))
+                .Where(IsTrackableModDirectory)
+                .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             foreach (string modDirectory in modDirectories)
@@ -95,43 +135,18 @@ namespace ReplayLogger
                         continue;
                     }
 
-                    string[] dllFiles = Directory.GetFiles(modDirectory, "*.dll");
-                    if (dllFiles.Length == 0)
+                    if (!TryResolveDirectoryMetadata(modDirectory, out ModAssemblyMetadata metadata))
                     {
                         unregisteredMods.Add(modDirectory);
                         continue;
                     }
 
-                    string modDllPath = dllFiles[0];
-                    try
-                    {
-                        Assembly modAssembly = Assembly.LoadFile(modDllPath);
-                        Type[] modTypes = modAssembly.GetTypes()
-                            .Where(t => typeof(IMod).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract)
-                            .ToArray();
-
-                        if (modTypes.Length == 0)
-                        {
-                            unregisteredMods.Add(modDirectory);
-                            continue;
-                        }
-
-                        Type modType = modTypes[0];
-                        string modName = modType.Name;
-                        string modVersion = ResolveModVersion(modAssembly, modType, modDllPath);
-                        string hash = CalculateSHA256(modDllPath);
-
-                        modInfo.Add($"{modName}|{modVersion}|{hash}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Modding.Logger.LogError($"Error loading assembly {modDllPath}: {ex.Message}");
-                        unregisteredMods.Add(modDirectory);
-                    }
+                    string hash = CalculateSHA256Cached(metadata.DllPath, metadata.DllSignature) ?? string.Empty;
+                    modInfo.Add($"{metadata.ModName}|{metadata.Version}|{hash}");
                 }
                 catch (Exception ex)
                 {
-                    Modding.Logger.LogError($"Error processing directory {modDirectory}: {ex.Message}");
+                    global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: error processing directory '{modDirectory}': {ex.Message}");
                     unregisteredMods.Add(modDirectory);
                 }
             }
@@ -141,14 +156,265 @@ namespace ReplayLogger
                 return modInfo;
             }
 
-            List<string> encDirs = new();
-            foreach (string dir in unregisteredMods)
+            List<string> report = [.. modInfo, "Unregistered mods:", .. unregisteredMods];
+            return report;
+        }
+
+        private static bool TryResolveDirectoryMetadata(string modDirectory, out ModAssemblyMetadata metadata)
+        {
+            metadata = null;
+            if (string.IsNullOrEmpty(modDirectory) || !Directory.Exists(modDirectory))
             {
-                encDirs.Add(dir);
+                return false;
             }
 
-            List<string> report = [.. modInfo, "Unregistered mods:", .. encDirs];
-            return report;
+            if (!TryGetOrderedDllCandidates(modDirectory, out List<string> dllCandidates))
+            {
+                return false;
+            }
+
+            foreach (string dllPath in dllCandidates)
+            {
+                if (!TryReadAssemblyMetadata(dllPath, out ModAssemblyMetadata candidate, out string errorMessage))
+                {
+                    if (!string.IsNullOrWhiteSpace(errorMessage))
+                    {
+                        global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: cannot inspect '{dllPath}': {errorMessage}");
+                    }
+
+                    continue;
+                }
+
+                if (candidate != null && candidate.HasModEntry)
+                {
+                    metadata = candidate;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryReadAssemblyMetadata(string dllPath, out ModAssemblyMetadata metadata, out string errorMessage)
+        {
+            metadata = null;
+            errorMessage = null;
+
+            if (string.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
+            {
+                return false;
+            }
+
+            bool hasSignature = TryGetDllSignature(dllPath, out string fullPath, out string dllSignature);
+            string effectivePath = hasSignature ? fullPath : dllPath;
+
+            if (hasSignature &&
+                cachedMetadataByDllPath.TryGetValue(effectivePath, out CachedMetadataInfo cached) &&
+                string.Equals(cached.DllSignature, dllSignature, StringComparison.Ordinal) &&
+                cached.Metadata != null)
+            {
+                metadata = CloneMetadata(cached.Metadata);
+                if (metadata != null)
+                {
+                    metadata.DllPath = effectivePath;
+                    metadata.DllSignature = dllSignature;
+                    return true;
+                }
+            }
+
+            if (!TryReadAssemblyMetadataUncached(effectivePath, out ModAssemblyMetadata uncachedMetadata, out errorMessage))
+            {
+                return false;
+            }
+
+            if (uncachedMetadata == null)
+            {
+                return false;
+            }
+
+            uncachedMetadata.DllPath = effectivePath;
+            uncachedMetadata.DllSignature = hasSignature ? dllSignature : null;
+            metadata = uncachedMetadata;
+
+            if (hasSignature)
+            {
+                cachedMetadataByDllPath[effectivePath] = new CachedMetadataInfo
+                {
+                    DllSignature = dllSignature,
+                    Metadata = CloneMetadata(uncachedMetadata)
+                };
+            }
+
+            return true;
+        }
+
+        private static bool TryReadAssemblyMetadataUncached(string dllPath, out ModAssemblyMetadata metadata, out string errorMessage)
+        {
+            metadata = null;
+            errorMessage = null;
+
+            try
+            {
+                ReaderParameters readerParameters = new()
+                {
+                    ReadSymbols = false,
+                    ReadingMode = ReadingMode.Deferred
+                };
+
+                using AssemblyDefinition assembly = AssemblyDefinition.ReadAssembly(dllPath, readerParameters);
+                string modTypeName = TryFindModTypeName(assembly);
+                string modVersion = ResolveModVersion(assembly, dllPath);
+
+                metadata = new ModAssemblyMetadata
+                {
+                    DllPath = dllPath,
+                    ModName = string.IsNullOrWhiteSpace(modTypeName)
+                        ? Path.GetFileNameWithoutExtension(dllPath)
+                        : modTypeName,
+                    Version = string.IsNullOrWhiteSpace(modVersion) ? "Unknown" : modVersion,
+                    HasModEntry = !string.IsNullOrWhiteSpace(modTypeName)
+                };
+
+                return true;
+            }
+            catch (BadImageFormatException)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                return false;
+            }
+        }
+
+        private static ModAssemblyMetadata CloneMetadata(ModAssemblyMetadata metadata)
+        {
+            if (metadata == null)
+            {
+                return null;
+            }
+
+            return new ModAssemblyMetadata
+            {
+                DllPath = metadata.DllPath,
+                DllSignature = metadata.DllSignature,
+                ModName = metadata.ModName,
+                Version = metadata.Version,
+                HasModEntry = metadata.HasModEntry
+            };
+        }
+
+        private static string TryFindModTypeName(AssemblyDefinition assembly)
+        {
+            if (assembly?.MainModule == null)
+            {
+                return null;
+            }
+
+            foreach (TypeDefinition type in assembly.MainModule.Types)
+            {
+                if (!IsConcreteModType(type))
+                {
+                    continue;
+                }
+
+                return type.Name;
+            }
+
+            return null;
+        }
+
+        private static bool IsConcreteModType(TypeDefinition type)
+        {
+            if (type == null || !type.IsClass || type.IsAbstract)
+            {
+                return false;
+            }
+
+            if (ImplementsIMod(type))
+            {
+                return true;
+            }
+
+            return DerivesFromModBase(type);
+        }
+
+        private static bool ImplementsIMod(TypeDefinition type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            foreach (InterfaceImplementation implementation in type.Interfaces)
+            {
+                TypeReference iface = implementation?.InterfaceType;
+                if (iface == null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(iface.FullName, "Modding.IMod", StringComparison.Ordinal)
+                    || string.Equals(iface.Name, "IMod", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool DerivesFromModBase(TypeDefinition type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            TypeReference current = type.BaseType;
+            int guard = 0;
+            while (current != null && guard++ < 16)
+            {
+                if (string.Equals(current.FullName, "Modding.Mod", StringComparison.Ordinal)
+                    || (string.Equals(current.Name, "Mod", StringComparison.Ordinal)
+                        && string.Equals(current.Namespace, "Modding", StringComparison.Ordinal)))
+                {
+                    return true;
+                }
+
+                TypeDefinition resolved = SafeResolve(current);
+                if (resolved == null)
+                {
+                    break;
+                }
+
+                if (ImplementsIMod(resolved))
+                {
+                    return true;
+                }
+
+                current = resolved.BaseType;
+            }
+
+            return false;
+        }
+
+        private static TypeDefinition SafeResolve(TypeReference type)
+        {
+            if (type == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return type.Resolve();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static string BuildModsFingerprint(string modsDir)
@@ -157,8 +423,8 @@ namespace ReplayLogger
             {
                 List<string> entries = new();
                 List<string> modDirectories = Directory.GetDirectories(modsDir)
-                    .Where(dir => !Path.GetFileName(dir).Equals("Disabled", StringComparison.OrdinalIgnoreCase) &&
-                                   !Path.GetFileName(dir).Equals("Vasi", StringComparison.OrdinalIgnoreCase))
+                    .Where(IsTrackableModDirectory)
+                    .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 foreach (string modDirectory in modDirectories)
@@ -239,18 +505,35 @@ namespace ReplayLogger
             }
         }
 
-        private static bool TryGetPrimaryModDll(string modDirectory, out string dllPath)
+        private static bool TryGetDllSignature(string dllPath, out string fullPath, out string signature)
         {
-            dllPath = null;
+            fullPath = null;
+            signature = null;
+
+            if (string.IsNullOrWhiteSpace(dllPath))
+            {
+                return false;
+            }
+
             try
             {
-                string[] dllFiles = Directory.GetFiles(modDirectory, "*.dll");
-                if (dllFiles.Length == 0)
+                fullPath = Path.GetFullPath(dllPath);
+            }
+            catch
+            {
+                fullPath = dllPath;
+            }
+
+            try
+            {
+                if (!File.Exists(fullPath))
                 {
                     return false;
                 }
 
-                dllPath = dllFiles[0];
+                FileInfo info = new(fullPath);
+                string miniHash = ComputeMiniHash(fullPath);
+                signature = $"{info.Length}|{info.LastWriteTimeUtc.Ticks}|{miniHash}";
                 return true;
             }
             catch
@@ -259,7 +542,90 @@ namespace ReplayLogger
             }
         }
 
+        private static bool TryGetPrimaryModDll(string modDirectory, out string dllPath)
+        {
+            dllPath = null;
+            if (!TryGetOrderedDllCandidates(modDirectory, out List<string> dllCandidates) || dllCandidates.Count == 0)
+            {
+                return false;
+            }
+
+            dllPath = dllCandidates[0];
+            return !string.IsNullOrEmpty(dllPath);
+        }
+
+        private static bool TryGetOrderedDllCandidates(string modDirectory, out List<string> dllCandidates)
+        {
+            dllCandidates = null;
+            try
+            {
+                string[] dllFiles = Directory.GetFiles(modDirectory, "*.dll", SearchOption.TopDirectoryOnly);
+                if (dllFiles.Length == 0)
+                {
+                    return false;
+                }
+
+                string folderName = Path.GetFileName(modDirectory) ?? string.Empty;
+                string normalizedFolder = NormalizeModName(folderName);
+
+                dllCandidates = dllFiles
+                    .OrderByDescending(path => ScoreDllCandidate(path, normalizedFolder))
+                    .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                return dllCandidates.Count > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static int ScoreDllCandidate(string dllPath, string normalizedFolder)
+        {
+            if (string.IsNullOrEmpty(dllPath))
+            {
+                return int.MinValue;
+            }
+
+            string fileName = Path.GetFileNameWithoutExtension(dllPath) ?? string.Empty;
+            string normalizedFile = NormalizeModName(fileName);
+            int score = 0;
+
+            if (!string.IsNullOrEmpty(normalizedFolder))
+            {
+                if (string.Equals(normalizedFile, normalizedFolder, StringComparison.OrdinalIgnoreCase))
+                {
+                    score += 1000;
+                }
+                else if (normalizedFile.StartsWith(normalizedFolder, StringComparison.OrdinalIgnoreCase))
+                {
+                    score += 600;
+                }
+                else if (normalizedFile.IndexOf(normalizedFolder, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    score += 350;
+                }
+            }
+
+            foreach (string prefix in KnownDependencyPrefixes)
+            {
+                if (fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    score -= 500;
+                    break;
+                }
+            }
+
+            return score;
+        }
+
         public static string CalculateSHA256(string filePath)
+        {
+            return CalculateSHA256Cached(filePath, null);
+        }
+
+        private static string CalculateSHA256Cached(string filePath, string expectedDllSignature)
         {
             try
             {
@@ -268,27 +634,44 @@ namespace ReplayLogger
                     return null;
                 }
 
-                if (!File.Exists(filePath))
+                string fullPath = null;
+                string currentSignature = null;
+                bool hasSignature = !string.IsNullOrWhiteSpace(expectedDllSignature) &&
+                    TryGetDllSignature(filePath, out fullPath, out currentSignature) &&
+                    string.Equals(expectedDllSignature, currentSignature, StringComparison.Ordinal);
+
+                if (!hasSignature)
                 {
-                    Modding.Logger.Log($"пїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ: {filePath}");
-                    return null;
+                    if (!TryGetDllSignature(filePath, out fullPath, out currentSignature))
+                    {
+                        return null;
+                    }
                 }
 
-                using (SHA256 sha256 = SHA256.Create())
-                using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                if (cachedSha256ByDllPath.TryGetValue(fullPath, out CachedHashInfo cachedHash) &&
+                    string.Equals(cachedHash.DllSignature, currentSignature, StringComparison.Ordinal))
                 {
-                    byte[] hashBytes = sha256.ComputeHash(fileStream);
-                    return BitConverter.ToString(hashBytes).Replace("-", "").ToUpper();
+                    return cachedHash.Hash;
                 }
+
+                using SHA256 sha256 = SHA256.Create();
+                using FileStream fileStream = new(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                byte[] hashBytes = sha256.ComputeHash(fileStream);
+                string hash = BitConverter.ToString(hashBytes).Replace("-", string.Empty).ToUpperInvariant();
+                cachedSha256ByDllPath[fullPath] = new CachedHashInfo
+                {
+                    DllSignature = currentSignature,
+                    Hash = hash
+                };
+                return hash;
             }
-            catch (Exception ex)
+            catch
             {
-                Modding.Logger.Log($"пїЅиЁЎпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅб«ҐпїЅпїЅпїЅ SHA256 пїЅпїЅпїЅ д ©пїЅпїЅ {filePath}: {ex.Message}");
                 return null;
             }
         }
 
-        private static string ResolveModVersion(Assembly assembly, Type modType, string filePath)
+        private static string ResolveModVersion(AssemblyDefinition assembly, string filePath)
         {
             string modInfoVersion = TryGetModInfoVersion(assembly);
             if (!string.IsNullOrWhiteSpace(modInfoVersion))
@@ -296,37 +679,26 @@ namespace ReplayLogger
                 return modInfoVersion;
             }
 
-            string declaredVersion = TryInvokeGetVersion(modType);
-            if (!string.IsNullOrWhiteSpace(declaredVersion))
+            if (TryGetAttributeStringArgument(assembly?.CustomAttributes, "System.Reflection.AssemblyInformationalVersionAttribute", out string informationalVersion))
             {
-                return declaredVersion;
+                return informationalVersion;
+            }
+
+            if (TryGetAttributeStringArgument(assembly?.CustomAttributes, "System.Reflection.AssemblyFileVersionAttribute", out string fileVersionAttribute))
+            {
+                return fileVersionAttribute;
             }
 
             try
             {
-                AssemblyInformationalVersionAttribute info =
-                    assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>();
-                if (!string.IsNullOrWhiteSpace(info?.InformationalVersion))
-                {
-                    return info.InformationalVersion;
-                }
-            }
-            catch (Exception ex)
-            {
-                Modding.Logger.LogWarn($"ReplayLogger: cannot read informational version from '{filePath}': {ex.Message}");
-            }
-
-            try
-            {
-                Version asmVersion = assembly.GetName()?.Version;
+                Version asmVersion = assembly?.Name?.Version;
                 if (asmVersion != null)
                 {
                     return asmVersion.ToString();
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Modding.Logger.LogWarn($"ReplayLogger: cannot read assembly version from '{filePath}': {ex.Message}");
             }
 
             try
@@ -341,98 +713,79 @@ namespace ReplayLogger
                     }
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Modding.Logger.LogWarn($"ReplayLogger: cannot read file version from '{filePath}': {ex.Message}");
             }
 
             return "Unknown";
         }
 
-        private static string TryGetModInfoVersion(Assembly assembly)
+        private static bool TryGetAttributeStringArgument(ICollection<CustomAttribute> attributes, string attributeFullName, out string value)
         {
-            try
+            value = null;
+            if (attributes == null || attributes.Count == 0 || string.IsNullOrEmpty(attributeFullName))
             {
-                Type[] allTypes = assembly.GetTypes();
-                foreach (Type type in allTypes)
+                return false;
+            }
+
+            foreach (CustomAttribute attribute in attributes)
+            {
+                if (!string.Equals(attribute.AttributeType?.FullName, attributeFullName, StringComparison.Ordinal))
                 {
-                    if (!string.Equals(type.Name, "ModInfo", StringComparison.Ordinal) &&
-                        (type.FullName == null || !type.FullName.EndsWith(".ModInfo", StringComparison.Ordinal)))
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
-                    const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+                if (attribute.ConstructorArguments.Count == 0)
+                {
+                    continue;
+                }
 
-                    FieldInfo field = type.GetField("Version", flags);
-                    if (field != null && field.FieldType == typeof(string))
-                    {
-                        if (field.IsLiteral && !field.IsInitOnly)
-                        {
-                            if (field.GetRawConstantValue() is string literal && !string.IsNullOrWhiteSpace(literal))
-                            {
-                                return literal;
-                            }
-                        }
-                        else
-                        {
-                            if (field.GetValue(null) is string value && !string.IsNullOrWhiteSpace(value))
-                            {
-                                return value;
-                            }
-                        }
-                    }
+                CustomAttributeArgument arg = attribute.ConstructorArguments[0];
+                if (!string.Equals(arg.Type.FullName, "System.String", StringComparison.Ordinal))
+                {
+                    continue;
+                }
 
-                    PropertyInfo property = type.GetProperty("Version", flags);
-                    if (property?.PropertyType == typeof(string))
-                    {
-                        if (property.GetValue(null, null) is string propValue && !string.IsNullOrWhiteSpace(propValue))
-                        {
-                            return propValue;
-                        }
-                    }
+                if (arg.Value is string str && !string.IsNullOrWhiteSpace(str))
+                {
+                    value = str.Trim();
+                    return true;
                 }
             }
-            catch (ReflectionTypeLoadException ex)
-            {
-                foreach (Exception loaderEx in ex.LoaderExceptions ?? Array.Empty<Exception>())
-                {
-                    Modding.Logger.LogWarn($"ReplayLogger: failed to inspect ModInfo type: {loaderEx.Message}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Modding.Logger.LogWarn($"ReplayLogger: ModInfo.Version lookup failed: {ex.Message}");
-            }
 
-            return null;
+            return false;
         }
 
-        private static string TryInvokeGetVersion(Type modType)
+        private static string TryGetModInfoVersion(AssemblyDefinition assembly)
         {
-            if (modType == null)
-            {
-                return null;
-            }
-
             try
             {
-                MethodInfo method = modType.GetMethod("GetVersion", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (method == null || method.GetParameters().Length != 0)
+                if (assembly?.MainModule == null)
                 {
                     return null;
                 }
 
-                object instance = FormatterServices.GetUninitializedObject(modType);
-                object result = method.Invoke(instance, null);
-                if (result is string versionString && !string.IsNullOrWhiteSpace(versionString))
+                foreach (TypeDefinition type in assembly.MainModule.Types)
                 {
-                    return versionString;
+                    if (!string.Equals(type.Name, "ModInfo", StringComparison.Ordinal)
+                        && (type.FullName == null || !type.FullName.EndsWith(".ModInfo", StringComparison.Ordinal)))
+                    {
+                        continue;
+                    }
+
+                    FieldDefinition versionField = type.Fields.FirstOrDefault(field =>
+                        string.Equals(field.Name, "Version", StringComparison.Ordinal)
+                        && string.Equals(field.FieldType?.FullName, "System.String", StringComparison.Ordinal));
+
+                    if (versionField != null && versionField.HasConstant && versionField.Constant is string fieldVersion && !string.IsNullOrWhiteSpace(fieldVersion))
+                    {
+                        return fieldVersion.Trim();
+                    }
                 }
             }
             catch (Exception ex)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: GetVersion reflection failed for '{modType.FullName}': {ex.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: ModInfo.Version metadata lookup failed: {ex.Message}");
             }
 
             return null;
@@ -463,39 +816,42 @@ namespace ReplayLogger
                 string dllPath = GetPaleCourtDllPath(paleCourtDirectory);
                 if (string.IsNullOrEmpty(dllPath))
                 {
-                    string[] dllFiles = Directory.GetFiles(paleCourtDirectory, "*.dll");
-                    if (dllFiles.Length == 0)
+                    if (!TryGetPrimaryModDll(paleCourtDirectory, out dllPath))
                     {
                         return;
                     }
-
-                    dllPath = dllFiles[0];
                 }
 
-                Assembly modAssembly = Assembly.LoadFile(dllPath);
-                Type modType = modAssembly.GetTypes()
-                    .FirstOrDefault(t => typeof(IMod).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
-
-                if (modType == null)
+                if (!TryReadAssemblyMetadata(dllPath, out ModAssemblyMetadata metadata, out string errorMessage))
                 {
-                    Modding.Logger.LogWarn("ReplayLogger: Pale Court assembly does not expose an IMod implementation.");
+                    if (!string.IsNullOrWhiteSpace(errorMessage))
+                    {
+                        global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: cannot inspect Pale Court assembly '{dllPath}': {errorMessage}");
+                    }
+
                     return;
                 }
 
-                string version = ResolveModVersion(modAssembly, modType, dllPath);
-                string hash = CalculateSHA256(dllPath) ?? string.Empty;
+                if (metadata == null || !metadata.HasModEntry)
+                {
+                    global::ReplayLogger.InternalDiagnostics.Warn("ReplayLogger: Pale Court assembly does not expose an IMod implementation.");
+                    return;
+                }
 
+                string hash = CalculateSHA256Cached(dllPath, metadata?.DllSignature) ?? string.Empty;
                 cachedPaleCourtInfo = new CachedModInfo
                 {
                     DirectoryPath = Path.GetFullPath(paleCourtDirectory),
-                    ModName = modType.Name,
-                    Version = version,
+                    DllPath = metadata.DllPath,
+                    DllSignature = metadata.DllSignature,
+                    ModName = metadata.ModName,
+                    Version = metadata.Version,
                     Hash = hash
                 };
             }
             catch (Exception ex)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: cannot cache Pale Court info: {ex.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: cannot cache Pale Court info: {ex.Message}");
                 cachedPaleCourtInfo = null;
             }
         }
@@ -504,6 +860,13 @@ namespace ReplayLogger
         {
             if (cachedPaleCourtInfo == null || string.IsNullOrEmpty(directory))
             {
+                return false;
+            }
+
+            if (!IsCachedPaleCourtInfoCurrent())
+            {
+                cachedPaleCourtInfo = null;
+                paleCourtCacheAttempted = false;
                 return false;
             }
 
@@ -518,6 +881,23 @@ namespace ReplayLogger
             }
         }
 
+        private static bool IsCachedPaleCourtInfoCurrent()
+        {
+            if (cachedPaleCourtInfo == null ||
+                string.IsNullOrWhiteSpace(cachedPaleCourtInfo.DllPath) ||
+                string.IsNullOrWhiteSpace(cachedPaleCourtInfo.DllSignature))
+            {
+                return false;
+            }
+
+            if (!TryGetDllSignature(cachedPaleCourtInfo.DllPath, out _, out string signature))
+            {
+                return false;
+            }
+
+            return string.Equals(signature, cachedPaleCourtInfo.DllSignature, StringComparison.Ordinal);
+        }
+
         private static string FindPaleCourtDirectory(string modsDir)
         {
             try
@@ -530,8 +910,7 @@ namespace ReplayLogger
                         continue;
                     }
 
-                    if (folderName.Equals("Disabled", StringComparison.OrdinalIgnoreCase) ||
-                        folderName.Equals("Vasi", StringComparison.OrdinalIgnoreCase))
+                    if (!IsTrackableModDirectory(directory))
                     {
                         continue;
                     }
@@ -553,7 +932,7 @@ namespace ReplayLogger
             }
             catch (Exception ex)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: cannot locate Pale Court directory: {ex.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: cannot locate Pale Court directory: {ex.Message}");
             }
 
             return null;
@@ -592,6 +971,23 @@ namespace ReplayLogger
             return false;
         }
 
+        private static bool IsTrackableModDirectory(string directory)
+        {
+            if (string.IsNullOrEmpty(directory))
+            {
+                return false;
+            }
+
+            string folder = Path.GetFileName(directory);
+            if (string.IsNullOrEmpty(folder))
+            {
+                return false;
+            }
+
+            return !folder.Equals("Disabled", StringComparison.OrdinalIgnoreCase)
+                && !folder.Equals("Vasi", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string NormalizeModName(string value)
         {
             if (string.IsNullOrEmpty(value))
@@ -599,7 +995,7 @@ namespace ReplayLogger
                 return string.Empty;
             }
 
-            StringBuilder builder = new StringBuilder(value.Length);
+            StringBuilder builder = new(value.Length);
             foreach (char c in value)
             {
                 if (char.IsLetterOrDigit(c))
@@ -612,3 +1008,6 @@ namespace ReplayLogger
         }
     }
 }
+
+
+

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
@@ -47,7 +47,7 @@ namespace ReplayLogger
             }
             catch (Exception ex)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: failed to read NoBlur settings: {ex.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to read NoBlur settings: {ex.Message}");
                 return Array.Empty<string>();
             }
         }
@@ -154,3 +154,6 @@ namespace ReplayLogger
         }
     }
 }
+
+
+

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 
 namespace ReplayLogger
@@ -50,7 +50,7 @@ namespace ReplayLogger
             }
             catch (Exception e)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: failed to read AHE settings: {e.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to read AHE settings: {e.Message}");
                 return AllHallownestEnhancedToggleSnapshot.Unavailable;
             }
         }
@@ -127,3 +127,6 @@ namespace ReplayLogger
             Available && MainSwitch && StrengthenAllBoss && StrengthenAllMonsters;
     }
 }
+
+
+

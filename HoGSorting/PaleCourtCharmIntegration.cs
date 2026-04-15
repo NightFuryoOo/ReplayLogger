@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 
@@ -33,7 +33,7 @@ namespace ReplayLogger
                     return Array.Empty<string>();
                 }
 
-                object modInstance = instanceField.GetValue(null);
+                object modInstance = instanceField.GetCachedValue(null);
                 if (modInstance == null)
                 {
                     return Array.Empty<string>();
@@ -45,7 +45,7 @@ namespace ReplayLogger
                     return Array.Empty<string>();
                 }
 
-                if (equippedCharmsField?.GetValue(settings) is not bool[] flags || flags.Length == 0)
+                if (equippedCharmsField?.GetCachedValue(settings) is not bool[] flags || flags.Length == 0)
                 {
                     return Array.Empty<string>();
                 }
@@ -64,7 +64,7 @@ namespace ReplayLogger
             }
             catch (Exception ex)
             {
-                Modding.Logger.LogWarn($"ReplayLogger: failed to read Pale Court charms: {ex.Message}");
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to read Pale Court charms: {ex.Message}");
                 return Array.Empty<string>();
             }
         }
@@ -78,12 +78,12 @@ namespace ReplayLogger
 
             if (saveSettingsProperty != null)
             {
-                return saveSettingsProperty.GetValue(instance);
+                return saveSettingsProperty.GetCachedValue(instance);
             }
 
             if (saveSettingsField != null)
             {
-                return saveSettingsField.GetValue(instance);
+                return saveSettingsField.GetCachedValue(instance);
             }
 
             return null;
@@ -136,3 +136,6 @@ namespace ReplayLogger
         }
     }
 }
+
+
+

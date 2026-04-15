@@ -13,8 +13,9 @@ namespace ReplayLogger
         private string initialArenaName;
         private string currentArenaName;
         private long currentBaseUnixTime;
-        private Dictionary<string, string> initialState = new(StringComparer.Ordinal);
-        private Dictionary<string, string> currentState = new(StringComparer.Ordinal);
+        private CarefreeMelodyState initialState;
+        private CarefreeMelodyState currentState;
+        private bool hasCurrentState;
         private readonly List<string> changes = new();
 
         private Type moduleManagerType;
@@ -33,8 +34,9 @@ namespace ReplayLogger
             initialArenaName = null;
             currentArenaName = null;
             currentBaseUnixTime = 0;
-            initialState.Clear();
-            currentState.Clear();
+            initialState = default;
+            currentState = default;
+            hasCurrentState = false;
             changes.Clear();
         }
 
@@ -42,45 +44,33 @@ namespace ReplayLogger
         {
             currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
             currentBaseUnixTime = baseUnixTime;
+            long now = baseUnixTime;
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
+            CarefreeMelodyState snapshot = BuildState();
 
             if (!hasInitialState)
             {
                 hasInitialState = true;
                 initialArenaName = currentArenaName;
-                initialState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                initialState = snapshot;
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            if (currentState.Count == 0)
+            if (!hasCurrentState)
             {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            foreach (var entry in snapshot)
-            {
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            LogFieldChange("Carefree Melody Reset", currentState.ModuleEnabled, snapshot.ModuleEnabled, now);
+            LogFieldChange("Hits Since Shielded (In-Game)", currentState.HitsSinceShielded, snapshot.HitsSinceShielded, now);
+            currentState = snapshot;
         }
 
-        public void Update(string arenaName)
+        public void Update(string arenaName, long nowUnixTime)
         {
             if (!hasInitialState)
             {
@@ -93,36 +83,19 @@ namespace ReplayLogger
                 return;
             }
 
-            Dictionary<string, string> snapshot = BuildSnapshot();
-            if (snapshot.Count == 0)
+            CarefreeMelodyState snapshot = BuildState();
+
+            if (!hasCurrentState)
             {
+                currentState = snapshot;
+                hasCurrentState = true;
                 return;
             }
 
-            if (currentState.Count == 0)
-            {
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                return;
-            }
-
-            foreach (var entry in snapshot)
-            {
-                if (currentState.TryGetValue(entry.Key, out string previous) &&
-                    string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                string descriptor = previous == null
-                    ? $"{entry.Key}: {entry.Value}"
-                    : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-            }
-
-            currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+            long now = nowUnixTime;
+            LogFieldChange("Carefree Melody Reset", currentState.ModuleEnabled, snapshot.ModuleEnabled, now);
+            LogFieldChange("Hits Since Shielded (In-Game)", currentState.HitsSinceShielded, snapshot.HitsSinceShielded, now);
+            currentState = snapshot;
         }
 
         public void WriteSection(StreamWriter writer)
@@ -144,17 +117,8 @@ namespace ReplayLogger
             }
             LogWrite.EncryptedLine(writer, "    State:");
 
-            if (initialState.Count == 0)
-            {
-                LogWrite.EncryptedLine(writer, "      (unavailable)");
-            }
-            else
-            {
-                foreach (var entry in initialState)
-                {
-                    LogWrite.EncryptedLine(writer, $"      {entry.Key}: {entry.Value}");
-                }
-            }
+            LogWrite.EncryptedLine(writer, $"      Carefree Melody Reset: {FormatOptionalToggle(initialState.ModuleEnabled)}");
+            LogWrite.EncryptedLine(writer, $"      Hits Since Shielded (In-Game): {FormatOptionalInt(initialState.HitsSinceShielded)}");
 
             LogWrite.EncryptedLine(writer, "    Changes:");
             if (changes.Count == 0)
@@ -170,18 +134,38 @@ namespace ReplayLogger
             }
         }
 
-        private Dictionary<string, string> BuildSnapshot()
+        private CarefreeMelodyState BuildState()
         {
             bool hasEnabled = TryGetModuleEnabled(out bool enabled);
             bool hasHits = TryGetHitsSinceShielded(out int hits);
 
-            Dictionary<string, string> snapshot = new(StringComparer.Ordinal)
-            {
-                ["Carefree Melody Reset"] = hasEnabled ? FormatToggle(enabled) : "N/A",
-                ["Hits Since Shielded (In-Game)"] = hasHits ? hits.ToString(CultureInfo.InvariantCulture) : "N/A"
-            };
+            return new CarefreeMelodyState(
+                hasEnabled ? new Optional<bool>(enabled) : Optional<bool>.None,
+                hasHits ? new Optional<int>(hits) : Optional<int>.None);
+        }
 
-            return snapshot;
+        private void LogFieldChange(string key, Optional<bool> previous, Optional<bool> current, long now)
+        {
+            if (previous == current)
+            {
+                return;
+            }
+
+            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+        }
+
+        private void LogFieldChange(string key, Optional<int> previous, Optional<int> current, long now)
+        {
+            if (previous == current)
+            {
+                return;
+            }
+
+            string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+            long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+            changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
 
         private bool TryGetHitsSinceShielded(out int hits)
@@ -206,8 +190,8 @@ namespace ReplayLogger
             try
             {
                 object raw = hitsSinceShieldedProperty != null
-                    ? hitsSinceShieldedProperty.GetValue(hero)
-                    : hitsSinceShieldedField?.GetValue(hero);
+                    ? hitsSinceShieldedProperty.GetCachedValue(hero)
+                    : hitsSinceShieldedField?.GetCachedValue(hero);
 
                 if (raw == null)
                 {
@@ -240,8 +224,7 @@ namespace ReplayLogger
 
             try
             {
-                PropertyInfo prop = module.GetType().GetProperty("Enabled", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop?.GetValue(module) is bool flag)
+                if (ReflectionMemberAccessCache.TryGetCachedRuntimeBoolProperty(module, "Enabled", out bool flag))
                 {
                     enabled = flag;
                     return true;
@@ -289,14 +272,16 @@ namespace ReplayLogger
 
             try
             {
-                object raw = modulesProperty?.GetValue(null) ?? modulesField?.GetValue(null);
+                object raw = modulesProperty?.GetCachedValue(null) ?? modulesField?.GetCachedValue(null);
                 if (raw is IDictionary dict)
                 {
                     return dict;
                 }
 
-                object value = raw?.GetType().GetProperty("Value", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(raw);
-                return value as IDictionary;
+                if (ReflectionMemberAccessCache.TryGetCachedRuntimePropertyValue(raw, "Value", out object value))
+                {
+                    return value as IDictionary;
+                }
             }
             catch
             {
@@ -335,6 +320,30 @@ namespace ReplayLogger
             return null;
         }
 
+        private static string FormatOptionalToggle(Optional<bool> value)
+        {
+            return value.HasValue ? FormatToggle(value.Value) : "N/A";
+        }
+
+        private static string FormatOptionalInt(Optional<int> value)
+        {
+            return value.HasValue
+                ? value.Value.ToString(CultureInfo.InvariantCulture)
+                : "N/A";
+        }
+
         private static string FormatToggle(bool value) => value ? "On" : "Off";
+
+        private readonly struct CarefreeMelodyState
+        {
+            internal CarefreeMelodyState(Optional<bool> moduleEnabled, Optional<int> hitsSinceShielded)
+            {
+                ModuleEnabled = moduleEnabled;
+                HitsSinceShielded = hitsSinceShielded;
+            }
+
+            internal Optional<bool> ModuleEnabled { get; }
+            internal Optional<int> HitsSinceShielded { get; }
+        }
     }
 }

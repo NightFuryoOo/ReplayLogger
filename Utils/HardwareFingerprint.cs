@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using Modding;
 using System;
 using System.Collections.Generic;
@@ -76,7 +76,7 @@ namespace ReplayLogger
                 }
                 catch (Exception ex)
                 {
-                    Modding.Logger.LogWarn($"ReplayLogger: failed to compute hardware hash: {ex.Message}");
+                    global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to compute hardware hash: {ex.Message}");
                     cachedHash = null;
                     cachedPartsLine = BuildPartsLine(null, null, null, null);
                 }
@@ -250,3 +250,6 @@ namespace ReplayLogger
         }
     }
 }
+
+
+

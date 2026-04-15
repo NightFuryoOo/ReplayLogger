@@ -17,13 +17,12 @@ namespace ReplayLogger
             private string currentArenaName;
             private long currentBaseUnixTime;
             private long initialFillDeadline;
-            private Dictionary<string, string> initialState = new(StringComparer.Ordinal);
-            private Dictionary<string, string> currentState = new(StringComparer.Ordinal);
+            private CollectorPhasesState initialState;
+            private CollectorPhasesState currentState;
+            private bool hasCurrentState;
             private readonly List<string> changes = new();
-            private readonly HashSet<string> pendingInitialKeys = new(StringComparer.Ordinal);
+            private CollectorPhasesPendingState pendingInitialState;
             private const int InitialFillWindowMs = 2000;
-            private long lastUpdateTime;
-            private const int UpdateThrottleMs = 1000;
 
             private Type moduleManagerType;
             private bool moduleManagerResolved;
@@ -73,6 +72,7 @@ namespace ReplayLogger
             private IntCompare collectorPhase2ThresholdCompare;
             private long lastControlFsmSearchTime;
             private long lastPhaseFsmSearchTime;
+            private string fsmCacheSceneName;
             private const int FsmSearchThrottleMs = 1000;
 
             public bool HasData => hasInitialState || changes.Count > 0;
@@ -84,19 +84,22 @@ namespace ReplayLogger
                 currentArenaName = null;
                 currentBaseUnixTime = 0;
                 initialFillDeadline = 0;
-                initialState.Clear();
-                currentState.Clear();
+                initialState = default;
+                currentState = default;
+                hasCurrentState = false;
                 changes.Clear();
-                pendingInitialKeys.Clear();
-                lastUpdateTime = 0;
+                pendingInitialState = default;
                 lastControlFsmSearchTime = 0;
                 lastPhaseFsmSearchTime = 0;
+                fsmCacheSceneName = null;
+                PlayMakerFsmSceneCache.Invalidate();
             }
 
             public void StartFight(string arenaName, long baseUnixTime)
             {
                 currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
                 currentBaseUnixTime = baseUnixTime;
+                long now = baseUnixTime;
                 collectorControlFsm = null;
                 collectorControlFsmId = 0;
                 collectorResummonCompare = null;
@@ -107,55 +110,37 @@ namespace ReplayLogger
                 collectorPhase2ThresholdCompare = null;
                 lastControlFsmSearchTime = 0;
                 lastPhaseFsmSearchTime = 0;
-                lastUpdateTime = 0;
+                fsmCacheSceneName = null;
+                PlayMakerFsmSceneCache.Invalidate();
 
-                Dictionary<string, string> snapshot = BuildSnapshot();
+                CollectorPhasesState snapshot = BuildState(now);
 
                 if (!hasInitialState)
                 {
                     hasInitialState = true;
                     initialArenaName = currentArenaName;
-                    initialState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                    currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                    pendingInitialKeys.Clear();
-                    foreach (var entry in initialState)
-                    {
-                        if (string.Equals(entry.Value, "N/A", StringComparison.Ordinal))
-                        {
-                            pendingInitialKeys.Add(entry.Key);
-                        }
-                    }
-                    initialFillDeadline = DateTimeOffset.Now.ToUnixTimeMilliseconds() + InitialFillWindowMs;
+                    initialState = snapshot;
+                    currentState = snapshot;
+                    hasCurrentState = true;
+                    pendingInitialState = CollectorPhasesPendingState.FromState(initialState);
+                    initialFillDeadline = pendingInitialState.HasAny
+                        ? now + InitialFillWindowMs
+                        : 0;
                     return;
                 }
 
-                if (currentState.Count == 0)
+                if (!hasCurrentState)
                 {
-                    currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                    currentState = snapshot;
+                    hasCurrentState = true;
                     return;
                 }
 
-                foreach (var entry in snapshot)
-                {
-                    if (currentState.TryGetValue(entry.Key, out string previous) &&
-                        string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    string descriptor = previous == null
-                        ? $"{entry.Key}: {entry.Value}"
-                        : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                    long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                    long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                    changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-                }
-
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                LogStateChanges(snapshot, now);
+                currentState = snapshot;
             }
 
-            public void Update(string arenaName)
+            public void Update(string arenaName, long nowUnixTime)
             {
                 if (!hasInitialState)
                 {
@@ -168,68 +153,27 @@ namespace ReplayLogger
                     return;
                 }
 
-                long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                if (lastUpdateTime > 0 && now - lastUpdateTime < UpdateThrottleMs)
+                long now = nowUnixTime;
+
+                CollectorPhasesState snapshot = BuildState(now);
+                if (pendingInitialState.HasAny && now <= initialFillDeadline)
                 {
+                    FillPendingInitialState(snapshot);
+                }
+                else if (pendingInitialState.HasAny && now > initialFillDeadline)
+                {
+                    pendingInitialState = default;
+                }
+
+                if (!hasCurrentState)
+                {
+                    currentState = snapshot;
+                    hasCurrentState = true;
                     return;
                 }
 
-                lastUpdateTime = now;
-
-                Dictionary<string, string> snapshot = BuildSnapshot();
-                if (snapshot.Count == 0)
-                {
-                    return;
-                }
-
-                if (pendingInitialKeys.Count > 0 && now <= initialFillDeadline)
-                {
-                    foreach (var entry in snapshot)
-                    {
-                        if (!pendingInitialKeys.Contains(entry.Key))
-                        {
-                            continue;
-                        }
-
-                        if (string.Equals(entry.Value, "N/A", StringComparison.Ordinal))
-                        {
-                            continue;
-                        }
-
-                        initialState[entry.Key] = entry.Value;
-                        currentState[entry.Key] = entry.Value;
-                        pendingInitialKeys.Remove(entry.Key);
-                    }
-                }
-                else if (pendingInitialKeys.Count > 0 && now > initialFillDeadline)
-                {
-                    pendingInitialKeys.Clear();
-                }
-
-                if (currentState.Count == 0)
-                {
-                    currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
-                    return;
-                }
-
-                foreach (var entry in snapshot)
-                {
-                    if (currentState.TryGetValue(entry.Key, out string previous) &&
-                        string.Equals(previous, entry.Value, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    string descriptor = previous == null
-                        ? $"{entry.Key}: {entry.Value}"
-                        : $"{entry.Key}: {previous} -> {entry.Value}";
-
-                    long unixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                    long delta = currentBaseUnixTime > 0 ? unixTime - currentBaseUnixTime : 0;
-                    changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-                }
-
-                currentState = new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+                LogStateChanges(snapshot, now);
+                currentState = snapshot;
             }
 
             public void WriteSection(StreamWriter writer)
@@ -244,67 +188,320 @@ namespace ReplayLogger
                     return;
                 }
 
-                LogWrite.EncryptedLine(writer, "  Collector Phases:");
-                if (!string.IsNullOrEmpty(initialArenaName))
+                List<string> batch = TempObjectPools.RentStringList(changes.Count + 24);
+                try
                 {
-                    LogWrite.EncryptedLine(writer, $"    Initial Arena: {initialArenaName}");
-                }
-                LogWrite.EncryptedLine(writer, "    State:");
-
-                if (initialState.Count == 0)
-                {
-                    LogWrite.EncryptedLine(writer, "      (unavailable)");
-                }
-                else
-                {
-                    foreach (var entry in initialState)
+                    batch.Add("  Collector Phases:");
+                    if (!string.IsNullOrEmpty(initialArenaName))
                     {
-                        LogWrite.EncryptedLine(writer, $"      {entry.Key}: {entry.Value}");
+                        batch.Add($"    Initial Arena: {initialArenaName}");
                     }
-                }
-
-                LogWrite.EncryptedLine(writer, "    Changes:");
-                if (changes.Count == 0)
-                {
-                    LogWrite.EncryptedLine(writer, "      (none)");
-                }
-                else
-                {
-                    foreach (string change in changes)
+                    batch.Add("    State:");
+                    batch.Add($"      Enabled: {FormatOptionalToggle(initialState.Enabled)}");
+                    batch.Add($"      Phase: {FormatOptionalInt(initialState.Phase)}");
+                    batch.Add($"      Collector Immortal: {FormatOptionalToggle(initialState.CollectorImmortal)}");
+                    batch.Add($"      Ignore Initial Jar Limits (Toggle): {FormatOptionalToggle(initialState.IgnoreInitialJarLimit)}");
+                    batch.Add($"      Initial Jar Limit (In-Game): {FormatOptionalInt(initialState.InitialJarLimitInGame)}");
+                    batch.Add($"      Use Custom Phase 2 HP (Toggle): {FormatOptionalToggle(initialState.UseCustomPhase2Threshold)}");
+                    batch.Add($"      Phase 2 HP Threshold (Value): {FormatOptionalInt(initialState.Phase2ThresholdValue)}");
+                    batch.Add($"      Phase 2 HP Threshold (In-Game): {FormatOptionalInt(initialState.Phase2ThresholdInGame)}");
+                    batch.Add($"      Use Max HP (Toggle): {FormatOptionalToggle(initialState.UseMaxHp)}");
+                    batch.Add($"      Collector Max HP (Value): {FormatOptionalInt(initialState.CollectorMaxHp)}");
+                    batch.Add($"      Squit HP (Value): {FormatOptionalInt(initialState.BuzzerHp)}");
+                    batch.Add($"      Spawn Squit (Toggle): {FormatOptionalToggle(initialState.SpawnBuzzer)}");
+                    batch.Add($"      Baldur HP (Value): {FormatOptionalInt(initialState.RollerHp)}");
+                    batch.Add($"      Spawn Baldur (Toggle): {FormatOptionalToggle(initialState.SpawnRoller)}");
+                    batch.Add($"      Aspid HP (Value): {FormatOptionalInt(initialState.SpitterHp)}");
+                    batch.Add($"      Spawn Aspid (Toggle): {FormatOptionalToggle(initialState.SpawnSpitter)}");
+                    batch.Add($"      Use Custom Summon Limit (Toggle): {FormatOptionalToggle(initialState.DisableSummonLimit)}");
+                    batch.Add($"      Custom Summon Limit (Value): {FormatOptionalInt(initialState.CustomSummonLimit)}");
+                    batch.Add($"      Summon Limit (In-Game / Summon?): {FormatOptionalInt(initialState.SummonLimitInGame)}");
+                    batch.Add($"      Summon Limit (In-Game / Enemy Count): {FormatOptionalInt(initialState.EnemyCountLimitInGame)}");
+                    batch.Add("    Changes:");
+                    if (changes.Count == 0)
                     {
-                        LogWrite.EncryptedLine(writer, $"      {change}");
+                        batch.Add("      (none)");
                     }
+                    else
+                    {
+                        foreach (string change in changes)
+                        {
+                            batch.Add($"      {change}");
+                        }
+                    }
+
+                    LogWrite.EncryptedLines(writer, batch);
+                }
+                finally
+                {
+                    TempObjectPools.ReturnStringList(batch);
                 }
             }
 
-            private Dictionary<string, string> BuildSnapshot()
+            private CollectorPhasesState BuildState(long nowUnixTime)
             {
-                Dictionary<string, string> snapshot = new(StringComparer.Ordinal)
-                {
-                    ["Enabled"] = TryGetCollectorPhasesEnabled(out bool enabled) ? FormatToggle(enabled) : "N/A",
-                    ["Phase"] = TryGetCollectorPhase(out int phase) ? phase.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Collector Immortal"] = TryGetCollectorImmortal(out bool immortal) ? FormatToggle(immortal) : "N/A",
-                    ["Ignore Initial Jar Limits (Toggle)"] = TryGetIgnoreInitialJarLimitToggle(out bool ignoreInit) ? FormatToggle(ignoreInit) : "N/A",
-                    ["Initial Jar Limit (In-Game)"] = TryGetInitialJarLimitInGame(out int limit) ? limit.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Use Custom Phase 2 HP (Toggle)"] = TryGetUseCustomPhase2Threshold(out bool useCustomPhase2) ? FormatToggle(useCustomPhase2) : "N/A",
-                    ["Phase 2 HP Threshold (Value)"] = TryGetCustomPhase2Threshold(out int phase2Value) ? phase2Value.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Phase 2 HP Threshold (In-Game)"] = TryGetPhase2ThresholdInGame(out int phase2InGame) ? phase2InGame.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Use Max HP (Toggle)"] = TryGetUseMaxHp(out bool useMax) ? FormatToggle(useMax) : "N/A",
-                    ["Collector Max HP (Value)"] = TryGetCollectorMaxHp(out int maxHp) ? maxHp.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Squit HP (Value)"] = TryGetBuzzerHp(out int buzzerHp) ? buzzerHp.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Spawn Squit (Toggle)"] = TryGetSpawnBuzzer(out bool spawnBuzzer) ? FormatToggle(spawnBuzzer) : "N/A",
-                    ["Baldur HP (Value)"] = TryGetRollerHp(out int rollerHp) ? rollerHp.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Spawn Baldur (Toggle)"] = TryGetSpawnRoller(out bool spawnRoller) ? FormatToggle(spawnRoller) : "N/A",
-                    ["Aspid HP (Value)"] = TryGetSpitterHp(out int spitterHp) ? spitterHp.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Spawn Aspid (Toggle)"] = TryGetSpawnSpitter(out bool spawnSpitter) ? FormatToggle(spawnSpitter) : "N/A"
-                    ,
-                    ["Use Custom Summon Limit (Toggle)"] = TryGetDisableSummonLimit(out bool disableSummonLimit) ? FormatToggle(disableSummonLimit) : "N/A",
-                    ["Custom Summon Limit (Value)"] = TryGetCustomSummonLimit(out int customSummonLimit) ? customSummonLimit.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Summon Limit (In-Game / Summon?)"] = TryGetSummonLimitInGame(out int summonLimit) ? summonLimit.ToString(CultureInfo.InvariantCulture) : "N/A",
-                    ["Summon Limit (In-Game / Enemy Count)"] = TryGetEnemyCountLimitInGame(out int enemyCountLimit) ? enemyCountLimit.ToString(CultureInfo.InvariantCulture) : "N/A"
-                };
+                return new CollectorPhasesState(
+                    TryGetCollectorPhasesEnabled(out bool enabled) ? new Optional<bool>(enabled) : Optional<bool>.None,
+                    TryGetCollectorPhase(out int phase) ? new Optional<int>(phase) : Optional<int>.None,
+                    TryGetCollectorImmortal(out bool immortal) ? new Optional<bool>(immortal) : Optional<bool>.None,
+                    TryGetIgnoreInitialJarLimitToggle(out bool ignoreInit) ? new Optional<bool>(ignoreInit) : Optional<bool>.None,
+                    TryGetInitialJarLimitInGame(out int initialLimit, nowUnixTime) ? new Optional<int>(initialLimit) : Optional<int>.None,
+                    TryGetUseCustomPhase2Threshold(out bool useCustomPhase2) ? new Optional<bool>(useCustomPhase2) : Optional<bool>.None,
+                    TryGetCustomPhase2Threshold(out int phase2Value) ? new Optional<int>(phase2Value) : Optional<int>.None,
+                    TryGetPhase2ThresholdInGame(out int phase2InGame, nowUnixTime) ? new Optional<int>(phase2InGame) : Optional<int>.None,
+                    TryGetUseMaxHp(out bool useMaxHp) ? new Optional<bool>(useMaxHp) : Optional<bool>.None,
+                    TryGetCollectorMaxHp(out int maxHp) ? new Optional<int>(maxHp) : Optional<int>.None,
+                    TryGetBuzzerHp(out int buzzerHp) ? new Optional<int>(buzzerHp) : Optional<int>.None,
+                    TryGetSpawnBuzzer(out bool spawnBuzzer) ? new Optional<bool>(spawnBuzzer) : Optional<bool>.None,
+                    TryGetRollerHp(out int rollerHp) ? new Optional<int>(rollerHp) : Optional<int>.None,
+                    TryGetSpawnRoller(out bool spawnRoller) ? new Optional<bool>(spawnRoller) : Optional<bool>.None,
+                    TryGetSpitterHp(out int spitterHp) ? new Optional<int>(spitterHp) : Optional<int>.None,
+                    TryGetSpawnSpitter(out bool spawnSpitter) ? new Optional<bool>(spawnSpitter) : Optional<bool>.None,
+                    TryGetDisableSummonLimit(out bool disableSummonLimit) ? new Optional<bool>(disableSummonLimit) : Optional<bool>.None,
+                    TryGetCustomSummonLimit(out int customSummonLimit) ? new Optional<int>(customSummonLimit) : Optional<int>.None,
+                    TryGetSummonLimitInGame(out int summonLimit, nowUnixTime) ? new Optional<int>(summonLimit) : Optional<int>.None,
+                    TryGetEnemyCountLimitInGame(out int enemyCountLimit, nowUnixTime) ? new Optional<int>(enemyCountLimit) : Optional<int>.None);
+            }
 
-                return snapshot;
+            private void LogStateChanges(CollectorPhasesState snapshot, long now)
+            {
+                LogFieldChange("Enabled", currentState.Enabled, snapshot.Enabled, now);
+                LogFieldChange("Phase", currentState.Phase, snapshot.Phase, now);
+                LogFieldChange("Collector Immortal", currentState.CollectorImmortal, snapshot.CollectorImmortal, now);
+                LogFieldChange("Ignore Initial Jar Limits (Toggle)", currentState.IgnoreInitialJarLimit, snapshot.IgnoreInitialJarLimit, now);
+                LogFieldChange("Initial Jar Limit (In-Game)", currentState.InitialJarLimitInGame, snapshot.InitialJarLimitInGame, now);
+                LogFieldChange("Use Custom Phase 2 HP (Toggle)", currentState.UseCustomPhase2Threshold, snapshot.UseCustomPhase2Threshold, now);
+                LogFieldChange("Phase 2 HP Threshold (Value)", currentState.Phase2ThresholdValue, snapshot.Phase2ThresholdValue, now);
+                LogFieldChange("Phase 2 HP Threshold (In-Game)", currentState.Phase2ThresholdInGame, snapshot.Phase2ThresholdInGame, now);
+                LogFieldChange("Use Max HP (Toggle)", currentState.UseMaxHp, snapshot.UseMaxHp, now);
+                LogFieldChange("Collector Max HP (Value)", currentState.CollectorMaxHp, snapshot.CollectorMaxHp, now);
+                LogFieldChange("Squit HP (Value)", currentState.BuzzerHp, snapshot.BuzzerHp, now);
+                LogFieldChange("Spawn Squit (Toggle)", currentState.SpawnBuzzer, snapshot.SpawnBuzzer, now);
+                LogFieldChange("Baldur HP (Value)", currentState.RollerHp, snapshot.RollerHp, now);
+                LogFieldChange("Spawn Baldur (Toggle)", currentState.SpawnRoller, snapshot.SpawnRoller, now);
+                LogFieldChange("Aspid HP (Value)", currentState.SpitterHp, snapshot.SpitterHp, now);
+                LogFieldChange("Spawn Aspid (Toggle)", currentState.SpawnSpitter, snapshot.SpawnSpitter, now);
+                LogFieldChange("Use Custom Summon Limit (Toggle)", currentState.DisableSummonLimit, snapshot.DisableSummonLimit, now);
+                LogFieldChange("Custom Summon Limit (Value)", currentState.CustomSummonLimit, snapshot.CustomSummonLimit, now);
+                LogFieldChange("Summon Limit (In-Game / Summon?)", currentState.SummonLimitInGame, snapshot.SummonLimitInGame, now);
+                LogFieldChange("Summon Limit (In-Game / Enemy Count)", currentState.EnemyCountLimitInGame, snapshot.EnemyCountLimitInGame, now);
+            }
+
+            private void FillPendingInitialState(CollectorPhasesState snapshot)
+            {
+                UpdatePendingField(ref initialState.Enabled, ref currentState.Enabled, snapshot.Enabled, ref pendingInitialState.Enabled);
+                UpdatePendingField(ref initialState.Phase, ref currentState.Phase, snapshot.Phase, ref pendingInitialState.Phase);
+                UpdatePendingField(ref initialState.CollectorImmortal, ref currentState.CollectorImmortal, snapshot.CollectorImmortal, ref pendingInitialState.CollectorImmortal);
+                UpdatePendingField(ref initialState.IgnoreInitialJarLimit, ref currentState.IgnoreInitialJarLimit, snapshot.IgnoreInitialJarLimit, ref pendingInitialState.IgnoreInitialJarLimit);
+                UpdatePendingField(ref initialState.InitialJarLimitInGame, ref currentState.InitialJarLimitInGame, snapshot.InitialJarLimitInGame, ref pendingInitialState.InitialJarLimitInGame);
+                UpdatePendingField(ref initialState.UseCustomPhase2Threshold, ref currentState.UseCustomPhase2Threshold, snapshot.UseCustomPhase2Threshold, ref pendingInitialState.UseCustomPhase2Threshold);
+                UpdatePendingField(ref initialState.Phase2ThresholdValue, ref currentState.Phase2ThresholdValue, snapshot.Phase2ThresholdValue, ref pendingInitialState.Phase2ThresholdValue);
+                UpdatePendingField(ref initialState.Phase2ThresholdInGame, ref currentState.Phase2ThresholdInGame, snapshot.Phase2ThresholdInGame, ref pendingInitialState.Phase2ThresholdInGame);
+                UpdatePendingField(ref initialState.UseMaxHp, ref currentState.UseMaxHp, snapshot.UseMaxHp, ref pendingInitialState.UseMaxHp);
+                UpdatePendingField(ref initialState.CollectorMaxHp, ref currentState.CollectorMaxHp, snapshot.CollectorMaxHp, ref pendingInitialState.CollectorMaxHp);
+                UpdatePendingField(ref initialState.BuzzerHp, ref currentState.BuzzerHp, snapshot.BuzzerHp, ref pendingInitialState.BuzzerHp);
+                UpdatePendingField(ref initialState.SpawnBuzzer, ref currentState.SpawnBuzzer, snapshot.SpawnBuzzer, ref pendingInitialState.SpawnBuzzer);
+                UpdatePendingField(ref initialState.RollerHp, ref currentState.RollerHp, snapshot.RollerHp, ref pendingInitialState.RollerHp);
+                UpdatePendingField(ref initialState.SpawnRoller, ref currentState.SpawnRoller, snapshot.SpawnRoller, ref pendingInitialState.SpawnRoller);
+                UpdatePendingField(ref initialState.SpitterHp, ref currentState.SpitterHp, snapshot.SpitterHp, ref pendingInitialState.SpitterHp);
+                UpdatePendingField(ref initialState.SpawnSpitter, ref currentState.SpawnSpitter, snapshot.SpawnSpitter, ref pendingInitialState.SpawnSpitter);
+                UpdatePendingField(ref initialState.DisableSummonLimit, ref currentState.DisableSummonLimit, snapshot.DisableSummonLimit, ref pendingInitialState.DisableSummonLimit);
+                UpdatePendingField(ref initialState.CustomSummonLimit, ref currentState.CustomSummonLimit, snapshot.CustomSummonLimit, ref pendingInitialState.CustomSummonLimit);
+                UpdatePendingField(ref initialState.SummonLimitInGame, ref currentState.SummonLimitInGame, snapshot.SummonLimitInGame, ref pendingInitialState.SummonLimitInGame);
+                UpdatePendingField(ref initialState.EnemyCountLimitInGame, ref currentState.EnemyCountLimitInGame, snapshot.EnemyCountLimitInGame, ref pendingInitialState.EnemyCountLimitInGame);
+            }
+
+            private static void UpdatePendingField<T>(
+                ref Optional<T> initialField,
+                ref Optional<T> currentField,
+                Optional<T> snapshotField,
+                ref bool pending)
+            {
+                if (!pending || !snapshotField.HasValue)
+                {
+                    return;
+                }
+
+                initialField = snapshotField;
+                currentField = snapshotField;
+                pending = false;
+            }
+
+            private void LogFieldChange(string key, Optional<bool> previous, Optional<bool> current, long now)
+            {
+                if (previous == current)
+                {
+                    return;
+                }
+
+                string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+                long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+            }
+
+            private void LogFieldChange(string key, Optional<int> previous, Optional<int> current, long now)
+            {
+                if (previous == current)
+                {
+                    return;
+                }
+
+                string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+                long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
+                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
+            }
+
+            private static string FormatOptionalToggle(Optional<bool> value)
+            {
+                return value.HasValue ? FormatToggle(value.Value) : "N/A";
+            }
+
+            private static string FormatOptionalInt(Optional<int> value)
+            {
+                return value.HasValue
+                    ? value.Value.ToString(CultureInfo.InvariantCulture)
+                    : "N/A";
+            }
+
+            private struct CollectorPhasesPendingState
+            {
+                internal bool Enabled;
+                internal bool Phase;
+                internal bool CollectorImmortal;
+                internal bool IgnoreInitialJarLimit;
+                internal bool InitialJarLimitInGame;
+                internal bool UseCustomPhase2Threshold;
+                internal bool Phase2ThresholdValue;
+                internal bool Phase2ThresholdInGame;
+                internal bool UseMaxHp;
+                internal bool CollectorMaxHp;
+                internal bool BuzzerHp;
+                internal bool SpawnBuzzer;
+                internal bool RollerHp;
+                internal bool SpawnRoller;
+                internal bool SpitterHp;
+                internal bool SpawnSpitter;
+                internal bool DisableSummonLimit;
+                internal bool CustomSummonLimit;
+                internal bool SummonLimitInGame;
+                internal bool EnemyCountLimitInGame;
+
+                internal bool HasAny =>
+                    Enabled ||
+                    Phase ||
+                    CollectorImmortal ||
+                    IgnoreInitialJarLimit ||
+                    InitialJarLimitInGame ||
+                    UseCustomPhase2Threshold ||
+                    Phase2ThresholdValue ||
+                    Phase2ThresholdInGame ||
+                    UseMaxHp ||
+                    CollectorMaxHp ||
+                    BuzzerHp ||
+                    SpawnBuzzer ||
+                    RollerHp ||
+                    SpawnRoller ||
+                    SpitterHp ||
+                    SpawnSpitter ||
+                    DisableSummonLimit ||
+                    CustomSummonLimit ||
+                    SummonLimitInGame ||
+                    EnemyCountLimitInGame;
+
+                internal static CollectorPhasesPendingState FromState(CollectorPhasesState state)
+                {
+                    return new CollectorPhasesPendingState
+                    {
+                        Enabled = !state.Enabled.HasValue,
+                        Phase = !state.Phase.HasValue,
+                        CollectorImmortal = !state.CollectorImmortal.HasValue,
+                        IgnoreInitialJarLimit = !state.IgnoreInitialJarLimit.HasValue,
+                        InitialJarLimitInGame = !state.InitialJarLimitInGame.HasValue,
+                        UseCustomPhase2Threshold = !state.UseCustomPhase2Threshold.HasValue,
+                        Phase2ThresholdValue = !state.Phase2ThresholdValue.HasValue,
+                        Phase2ThresholdInGame = !state.Phase2ThresholdInGame.HasValue,
+                        UseMaxHp = !state.UseMaxHp.HasValue,
+                        CollectorMaxHp = !state.CollectorMaxHp.HasValue,
+                        BuzzerHp = !state.BuzzerHp.HasValue,
+                        SpawnBuzzer = !state.SpawnBuzzer.HasValue,
+                        RollerHp = !state.RollerHp.HasValue,
+                        SpawnRoller = !state.SpawnRoller.HasValue,
+                        SpitterHp = !state.SpitterHp.HasValue,
+                        SpawnSpitter = !state.SpawnSpitter.HasValue,
+                        DisableSummonLimit = !state.DisableSummonLimit.HasValue,
+                        CustomSummonLimit = !state.CustomSummonLimit.HasValue,
+                        SummonLimitInGame = !state.SummonLimitInGame.HasValue,
+                        EnemyCountLimitInGame = !state.EnemyCountLimitInGame.HasValue
+                    };
+                }
+            }
+
+            private struct CollectorPhasesState
+            {
+                internal CollectorPhasesState(
+                    Optional<bool> enabled,
+                    Optional<int> phase,
+                    Optional<bool> collectorImmortal,
+                    Optional<bool> ignoreInitialJarLimit,
+                    Optional<int> initialJarLimitInGame,
+                    Optional<bool> useCustomPhase2Threshold,
+                    Optional<int> phase2ThresholdValue,
+                    Optional<int> phase2ThresholdInGame,
+                    Optional<bool> useMaxHp,
+                    Optional<int> collectorMaxHp,
+                    Optional<int> buzzerHp,
+                    Optional<bool> spawnBuzzer,
+                    Optional<int> rollerHp,
+                    Optional<bool> spawnRoller,
+                    Optional<int> spitterHp,
+                    Optional<bool> spawnSpitter,
+                    Optional<bool> disableSummonLimit,
+                    Optional<int> customSummonLimit,
+                    Optional<int> summonLimitInGame,
+                    Optional<int> enemyCountLimitInGame)
+                {
+                    Enabled = enabled;
+                    Phase = phase;
+                    CollectorImmortal = collectorImmortal;
+                    IgnoreInitialJarLimit = ignoreInitialJarLimit;
+                    InitialJarLimitInGame = initialJarLimitInGame;
+                    UseCustomPhase2Threshold = useCustomPhase2Threshold;
+                    Phase2ThresholdValue = phase2ThresholdValue;
+                    Phase2ThresholdInGame = phase2ThresholdInGame;
+                    UseMaxHp = useMaxHp;
+                    CollectorMaxHp = collectorMaxHp;
+                    BuzzerHp = buzzerHp;
+                    SpawnBuzzer = spawnBuzzer;
+                    RollerHp = rollerHp;
+                    SpawnRoller = spawnRoller;
+                    SpitterHp = spitterHp;
+                    SpawnSpitter = spawnSpitter;
+                    DisableSummonLimit = disableSummonLimit;
+                    CustomSummonLimit = customSummonLimit;
+                    SummonLimitInGame = summonLimitInGame;
+                    EnemyCountLimitInGame = enemyCountLimitInGame;
+                }
+
+                internal Optional<bool> Enabled;
+                internal Optional<int> Phase;
+                internal Optional<bool> CollectorImmortal;
+                internal Optional<bool> IgnoreInitialJarLimit;
+                internal Optional<int> InitialJarLimitInGame;
+                internal Optional<bool> UseCustomPhase2Threshold;
+                internal Optional<int> Phase2ThresholdValue;
+                internal Optional<int> Phase2ThresholdInGame;
+                internal Optional<bool> UseMaxHp;
+                internal Optional<int> CollectorMaxHp;
+                internal Optional<int> BuzzerHp;
+                internal Optional<bool> SpawnBuzzer;
+                internal Optional<int> RollerHp;
+                internal Optional<bool> SpawnRoller;
+                internal Optional<int> SpitterHp;
+                internal Optional<bool> SpawnSpitter;
+                internal Optional<bool> DisableSummonLimit;
+                internal Optional<int> CustomSummonLimit;
+                internal Optional<int> SummonLimitInGame;
+                internal Optional<int> EnemyCountLimitInGame;
             }
 
             private bool TryGetCollectorPhasesEnabled(out bool enabled)
@@ -329,8 +526,7 @@ namespace ReplayLogger
 
                 try
                 {
-                    PropertyInfo prop = module.GetType().GetProperty("Enabled", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (prop?.GetValue(module) is bool flag)
+                    if (ReflectionMemberAccessCache.TryGetCachedRuntimeBoolProperty(module, "Enabled", out bool flag))
                     {
                         enabled = flag;
                         return true;
@@ -367,8 +563,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = collectorPhaseProperty != null
-                        ? collectorPhaseProperty.GetValue(null)
-                        : collectorPhaseField?.GetValue(null);
+                        ? collectorPhaseProperty.GetCachedValue(null)
+                        : collectorPhaseField?.GetCachedValue(null);
 
                     if (raw == null)
                     {
@@ -415,8 +611,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = collectorImmortalProperty != null
-                        ? collectorImmortalProperty.GetValue(null)
-                        : collectorImmortalField?.GetValue(null);
+                        ? collectorImmortalProperty.GetCachedValue(null)
+                        : collectorImmortalField?.GetCachedValue(null);
 
                     if (raw is bool flag)
                     {
@@ -455,8 +651,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = ignoreInitialJarLimitProperty != null
-                        ? ignoreInitialJarLimitProperty.GetValue(null)
-                        : ignoreInitialJarLimitField?.GetValue(null);
+                        ? ignoreInitialJarLimitProperty.GetCachedValue(null)
+                        : ignoreInitialJarLimitField?.GetCachedValue(null);
 
                     if (raw is bool flag)
                     {
@@ -495,8 +691,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = useCustomPhase2ThresholdProperty != null
-                        ? useCustomPhase2ThresholdProperty.GetValue(null)
-                        : useCustomPhase2ThresholdField?.GetValue(null);
+                        ? useCustomPhase2ThresholdProperty.GetCachedValue(null)
+                        : useCustomPhase2ThresholdField?.GetCachedValue(null);
 
                     if (raw is bool flag)
                     {
@@ -535,8 +731,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = customPhase2ThresholdProperty != null
-                        ? customPhase2ThresholdProperty.GetValue(null)
-                        : customPhase2ThresholdField?.GetValue(null);
+                        ? customPhase2ThresholdProperty.GetCachedValue(null)
+                        : customPhase2ThresholdField?.GetCachedValue(null);
 
                     if (raw == null)
                     {
@@ -581,8 +777,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = useMaxHpProperty != null
-                        ? useMaxHpProperty.GetValue(null)
-                        : useMaxHpField?.GetValue(null);
+                        ? useMaxHpProperty.GetCachedValue(null)
+                        : useMaxHpField?.GetCachedValue(null);
 
                     if (raw is bool flag)
                     {
@@ -625,8 +821,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = collectorMaxHpProperty != null
-                        ? collectorMaxHpProperty.GetValue(null)
-                        : collectorMaxHpField?.GetValue(null);
+                        ? collectorMaxHpProperty.GetCachedValue(null)
+                        : collectorMaxHpField?.GetCachedValue(null);
 
                     if (raw == null)
                     {
@@ -703,8 +899,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = disableSummonLimitProperty != null
-                        ? disableSummonLimitProperty.GetValue(null)
-                        : disableSummonLimitField?.GetValue(null);
+                        ? disableSummonLimitProperty.GetCachedValue(null)
+                        : disableSummonLimitField?.GetCachedValue(null);
 
                     if (raw is bool flag)
                     {
@@ -743,8 +939,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = customSummonLimitProperty != null
-                        ? customSummonLimitProperty.GetValue(null)
-                        : customSummonLimitField?.GetValue(null);
+                        ? customSummonLimitProperty.GetCachedValue(null)
+                        : customSummonLimitField?.GetCachedValue(null);
 
                     if (raw == null)
                     {
@@ -783,8 +979,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = property != null
-                        ? property.GetValue(null)
-                        : field?.GetValue(null);
+                        ? property.GetCachedValue(null)
+                        : field?.GetCachedValue(null);
 
                     if (raw is bool flag)
                     {
@@ -821,8 +1017,8 @@ namespace ReplayLogger
                 try
                 {
                     object raw = property != null
-                        ? property.GetValue(null)
-                        : field?.GetValue(null);
+                        ? property.GetCachedValue(null)
+                        : field?.GetCachedValue(null);
 
                     if (raw == null)
                     {
@@ -839,10 +1035,10 @@ namespace ReplayLogger
                 return false;
             }
 
-            private bool TryGetInitialJarLimitInGame(out int limit)
+            private bool TryGetInitialJarLimitInGame(out int limit, long nowUnixTime)
             {
                 limit = 0;
-                if (!TryResolveResummonCompare(out IntCompare compare))
+                if (!TryResolveResummonCompare(out IntCompare compare, nowUnixTime))
                 {
                     return false;
                 }
@@ -864,10 +1060,10 @@ namespace ReplayLogger
                 return false;
             }
 
-            private bool TryGetPhase2ThresholdInGame(out int threshold)
+            private bool TryGetPhase2ThresholdInGame(out int threshold, long nowUnixTime)
             {
                 threshold = 0;
-                if (!TryResolvePhase2ThresholdCompare(out IntCompare compare))
+                if (!TryResolvePhase2ThresholdCompare(out IntCompare compare, nowUnixTime))
                 {
                     return false;
                 }
@@ -889,10 +1085,10 @@ namespace ReplayLogger
                 return false;
             }
 
-            private bool TryGetSummonLimitInGame(out int limit)
+            private bool TryGetSummonLimitInGame(out int limit, long nowUnixTime)
             {
                 limit = 0;
-                if (!TryResolveSummonLimitCompare(out IntCompare compare))
+                if (!TryResolveSummonLimitCompare(out IntCompare compare, nowUnixTime))
                 {
                     return false;
                 }
@@ -914,10 +1110,10 @@ namespace ReplayLogger
                 return false;
             }
 
-            private bool TryGetEnemyCountLimitInGame(out int limit)
+            private bool TryGetEnemyCountLimitInGame(out int limit, long nowUnixTime)
             {
                 limit = 0;
-                if (!TryResolveEnemyCountLimitCompare(out IntCompare compare))
+                if (!TryResolveEnemyCountLimitCompare(out IntCompare compare, nowUnixTime))
                 {
                     return false;
                 }
@@ -939,7 +1135,7 @@ namespace ReplayLogger
                 return false;
             }
 
-            private bool TryResolveResummonCompare(out IntCompare compare)
+            private bool TryResolveResummonCompare(out IntCompare compare, long nowUnixTime)
             {
                 compare = collectorResummonCompare;
                 if (compare != null && IsCollectorControlFsmValid(collectorControlFsm))
@@ -948,7 +1144,7 @@ namespace ReplayLogger
                 }
 
                 collectorResummonCompare = null;
-                if (!TryGetCollectorControlFsm(out PlayMakerFSM fsm))
+                if (!TryGetCollectorControlFsm(out PlayMakerFSM fsm, nowUnixTime))
                 {
                     return false;
                 }
@@ -956,7 +1152,7 @@ namespace ReplayLogger
                 return TryResolveControlStateCompare(fsm, "Resummon?", ref collectorResummonCompare, out compare);
             }
 
-            private bool TryResolveSummonLimitCompare(out IntCompare compare)
+            private bool TryResolveSummonLimitCompare(out IntCompare compare, long nowUnixTime)
             {
                 compare = collectorSummonLimitCompare;
                 if (compare != null && IsCollectorControlFsmValid(collectorControlFsm))
@@ -965,7 +1161,7 @@ namespace ReplayLogger
                 }
 
                 collectorSummonLimitCompare = null;
-                if (!TryGetCollectorControlFsm(out PlayMakerFSM fsm))
+                if (!TryGetCollectorControlFsm(out PlayMakerFSM fsm, nowUnixTime))
                 {
                     return false;
                 }
@@ -978,7 +1174,7 @@ namespace ReplayLogger
                 return true;
             }
 
-            private bool TryResolveEnemyCountLimitCompare(out IntCompare compare)
+            private bool TryResolveEnemyCountLimitCompare(out IntCompare compare, long nowUnixTime)
             {
                 compare = collectorEnemyCountLimitCompare;
                 if (compare != null && IsCollectorControlFsmValid(collectorControlFsm))
@@ -987,7 +1183,7 @@ namespace ReplayLogger
                 }
 
                 collectorEnemyCountLimitCompare = null;
-                if (!TryGetCollectorControlFsm(out PlayMakerFSM fsm))
+                if (!TryGetCollectorControlFsm(out PlayMakerFSM fsm, nowUnixTime))
                 {
                     return false;
                 }
@@ -1034,7 +1230,7 @@ namespace ReplayLogger
                 return false;
             }
 
-            private bool TryResolvePhase2ThresholdCompare(out IntCompare compare)
+            private bool TryResolvePhase2ThresholdCompare(out IntCompare compare, long nowUnixTime)
             {
                 compare = collectorPhase2ThresholdCompare;
                 if (compare != null && IsCollectorPhaseControlValid(collectorPhaseControlFsm))
@@ -1047,7 +1243,7 @@ namespace ReplayLogger
 
                 try
                 {
-                    if (!TryGetCollectorPhaseControlFsm(out PlayMakerFSM fsm))
+                    if (!TryGetCollectorPhaseControlFsm(out PlayMakerFSM fsm, nowUnixTime))
                     {
                         return false;
                     }
@@ -1075,15 +1271,17 @@ namespace ReplayLogger
                 return false;
             }
 
-            private bool TryGetCollectorControlFsm(out PlayMakerFSM fsm)
+            private bool TryGetCollectorControlFsm(out PlayMakerFSM fsm, long nowUnixTime)
             {
+                EnsureCollectorSceneCacheCurrent();
+
                 fsm = collectorControlFsm;
                 if (IsCollectorControlFsmValid(fsm))
                 {
                     return true;
                 }
 
-                long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                long now = nowUnixTime;
                 if (lastControlFsmSearchTime > 0 && now - lastControlFsmSearchTime < FsmSearchThrottleMs)
                 {
                     return false;
@@ -1091,10 +1289,19 @@ namespace ReplayLogger
 
                 lastControlFsmSearchTime = now;
 
-                PlayMakerFSM best = FindCollectorFsm("Control", currentArenaName);
+                PlayMakerFSM best = FindCollectorFsm("Control", currentArenaName, forceRefresh: false);
                 if (best == null && !string.IsNullOrEmpty(currentArenaName))
                 {
-                    best = FindCollectorFsm("Control", null);
+                    best = FindCollectorFsm("Control", null, forceRefresh: false);
+                }
+
+                if (best == null)
+                {
+                    best = FindCollectorFsm("Control", currentArenaName, forceRefresh: true);
+                    if (best == null && !string.IsNullOrEmpty(currentArenaName))
+                    {
+                        best = FindCollectorFsm("Control", null, forceRefresh: true);
+                    }
                 }
 
                 if (best == null)
@@ -1116,15 +1323,17 @@ namespace ReplayLogger
                 return true;
             }
 
-            private bool TryGetCollectorPhaseControlFsm(out PlayMakerFSM fsm)
+            private bool TryGetCollectorPhaseControlFsm(out PlayMakerFSM fsm, long nowUnixTime)
             {
+                EnsureCollectorSceneCacheCurrent();
+
                 fsm = collectorPhaseControlFsm;
                 if (IsCollectorPhaseControlValid(fsm))
                 {
                     return true;
                 }
 
-                long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                long now = nowUnixTime;
                 if (lastPhaseFsmSearchTime > 0 && now - lastPhaseFsmSearchTime < FsmSearchThrottleMs)
                 {
                     return false;
@@ -1132,10 +1341,19 @@ namespace ReplayLogger
 
                 lastPhaseFsmSearchTime = now;
 
-                PlayMakerFSM best = FindCollectorFsm("Phase Control", currentArenaName);
+                PlayMakerFSM best = FindCollectorFsm("Phase Control", currentArenaName, forceRefresh: false);
                 if (best == null && !string.IsNullOrEmpty(currentArenaName))
                 {
-                    best = FindCollectorFsm("Phase Control", null);
+                    best = FindCollectorFsm("Phase Control", null, forceRefresh: false);
+                }
+
+                if (best == null)
+                {
+                    best = FindCollectorFsm("Phase Control", currentArenaName, forceRefresh: true);
+                    if (best == null && !string.IsNullOrEmpty(currentArenaName))
+                    {
+                        best = FindCollectorFsm("Phase Control", null, forceRefresh: true);
+                    }
                 }
 
                 if (best == null)
@@ -1217,12 +1435,12 @@ namespace ReplayLogger
                 return true;
             }
 
-            private static PlayMakerFSM FindCollectorFsm(string fsmName, string sceneName)
+            private PlayMakerFSM FindCollectorFsm(string fsmName, string sceneName, bool forceRefresh)
             {
                 PlayMakerFSM best = null;
                 int bestScore = int.MinValue;
 
-                PlayMakerFSM[] fsms = UnityEngine.Object.FindObjectsOfType<PlayMakerFSM>();
+                PlayMakerFSM[] fsms = GetSceneFsmCache(forceRefresh);
                 foreach (PlayMakerFSM fsm in fsms)
                 {
                     if (fsm == null || fsm.gameObject == null)
@@ -1285,6 +1503,31 @@ namespace ReplayLogger
                 return best;
             }
 
+            private void EnsureCollectorSceneCacheCurrent()
+            {
+                string activeSceneName = GameManager.instance?.sceneName;
+                if (string.Equals(fsmCacheSceneName, activeSceneName, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                fsmCacheSceneName = activeSceneName;
+                PlayMakerFsmSceneCache.Invalidate();
+                collectorControlFsm = null;
+                collectorControlFsmId = 0;
+                collectorResummonCompare = null;
+                collectorSummonLimitCompare = null;
+                collectorEnemyCountLimitCompare = null;
+                collectorPhaseControlFsm = null;
+                collectorPhaseControlFsmId = 0;
+                collectorPhase2ThresholdCompare = null;
+            }
+
+            private PlayMakerFSM[] GetSceneFsmCache(bool forceRefresh)
+            {
+                return PlayMakerFsmSceneCache.Get(forceRefresh);
+            }
+
             private IDictionary GetModuleMap()
             {
                 Type type = GetModuleManagerType();
@@ -1302,14 +1545,16 @@ namespace ReplayLogger
 
                 try
                 {
-                    object raw = modulesProperty?.GetValue(null) ?? modulesField?.GetValue(null);
+                    object raw = modulesProperty?.GetCachedValue(null) ?? modulesField?.GetCachedValue(null);
                     if (raw is IDictionary dict)
                     {
                         return dict;
                     }
 
-                    object value = raw?.GetType().GetProperty("Value", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(raw);
-                    return value as IDictionary;
+                    if (ReflectionMemberAccessCache.TryGetCachedRuntimePropertyValue(raw, "Value", out object value))
+                    {
+                        return value as IDictionary;
+                    }
                 }
                 catch
                 {

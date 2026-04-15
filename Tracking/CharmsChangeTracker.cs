@@ -8,6 +8,7 @@ namespace ReplayLogger
     internal sealed class CharmsChangeTracker
     {
         private readonly HashSet<int> equipped = new();
+        private readonly HashSet<int> currentBuffer = new();
         private readonly List<string> changes = new();
         private readonly List<string> inlineEvents = new();
 
@@ -22,20 +23,24 @@ namespace ReplayLogger
             SnapshotCurrent();
         }
 
-        public void Update(string arenaName, long lastUnixTime, StreamWriter writer = null)
+        public void Update(string arenaName, long lastUnixTime, long nowUnixTime, StreamWriter writer = null)
         {
             if (PlayerData.instance?.equippedCharms == null)
             {
                 return;
             }
 
-            HashSet<int> current = new(PlayerData.instance.equippedCharms);
+            currentBuffer.Clear();
+            foreach (int charm in PlayerData.instance.equippedCharms)
+            {
+                currentBuffer.Add(charm);
+            }
 
-            foreach (int charm in current)
+            foreach (int charm in currentBuffer)
             {
                 if (!equipped.Contains(charm))
                 {
-                    long delta = DateTimeOffset.Now.ToUnixTimeMilliseconds() - lastUnixTime;
+                    long delta = nowUnixTime - lastUnixTime;
                     changes.Add($"|{arenaName ?? "UnknownArena"}|+{delta}|Equipped {FormatCharm(charm)}");
                     LogInline(writer, arenaName, delta, $"Equipped {FormatCharm(charm)}");
                 }
@@ -43,16 +48,16 @@ namespace ReplayLogger
 
             foreach (int charm in equipped)
             {
-                if (!current.Contains(charm))
+                if (!currentBuffer.Contains(charm))
                 {
-                    long delta = DateTimeOffset.Now.ToUnixTimeMilliseconds() - lastUnixTime;
+                    long delta = nowUnixTime - lastUnixTime;
                     changes.Add($"|{arenaName ?? "UnknownArena"}|+{delta}|Unequipped {FormatCharm(charm)}");
                     LogInline(writer, arenaName, delta, $"Unequipped {FormatCharm(charm)}");
                 }
             }
 
             equipped.Clear();
-            foreach (int c in current)
+            foreach (int c in currentBuffer)
             {
                 equipped.Add(c);
             }
@@ -65,23 +70,33 @@ namespace ReplayLogger
                 return;
             }
 
-            LogWrite.EncryptedLine(writer, "Charms:");
-            if (changes.Count == 0)
+            List<string> batch = TempObjectPools.RentStringList(changes.Count + 3);
+            try
             {
-                LogWrite.EncryptedLine(writer, "  (no changes)");
-            }
-            else
-            {
-                foreach (string entry in changes)
+                batch.Add("Charms:");
+                if (changes.Count == 0)
                 {
-                    LogWrite.EncryptedLine(writer, entry);
+                    batch.Add("  (no changes)");
                 }
-            }
+                else
+                {
+                    foreach (string entry in changes)
+                    {
+                        batch.Add(entry);
+                    }
+                }
 
-            LogWrite.EncryptedLine(writer, string.Empty);
-            if (!string.IsNullOrEmpty(separator))
+                batch.Add(string.Empty);
+                if (!string.IsNullOrEmpty(separator))
+                {
+                    batch.Add(separator);
+                }
+
+                LogWrite.EncryptedLines(writer, batch);
+            }
+            finally
             {
-                LogWrite.EncryptedLine(writer, separator);
+                TempObjectPools.ReturnStringList(batch);
             }
         }
 
@@ -102,10 +117,6 @@ namespace ReplayLogger
             string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
             string entry = $"Charms|{arena}|+{delta}|{action}";
             inlineEvents.Add(entry);
-            if (writer != null)
-            {
-                LogWrite.EncryptedLine(writer, entry);
-            }
         }
 
         private static string FormatCharm(int charmId)

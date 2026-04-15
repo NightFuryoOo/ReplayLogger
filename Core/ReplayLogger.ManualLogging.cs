@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using UnityEngine;
 
@@ -94,6 +94,7 @@ namespace ReplayLogger
             manualStartScene = sceneName;
             manualRoomStartUnixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             lastUnixTime = manualRoomStartUnixTime;
+            godhomeQolTracker.StartFight(manualStartScene, lastUnixTime);
             string dataTime = DateTimeOffset.FromUnixTimeMilliseconds(manualRoomStartUnixTime).ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss.fff");
             DamageAnfInv?.Add($"{dataTime}|{manualRoomStartUnixTime}|{manualStartScene}|");
             LogWrite.EncryptedLine(writer, $"{dataTime}|{manualRoomStartUnixTime}|{manualStartScene}|");
@@ -124,11 +125,16 @@ namespace ReplayLogger
                 return;
             }
 
+            if (PlayerData.instance == null)
+            {
+                return;
+            }
+
             DateTimeOffset now = DateTimeOffset.Now;
             lastUnixTime = now.ToUnixTimeMilliseconds();
             startUnixTime = lastUnixTime;
             string dataTime = now.ToString("dd.MM.yyyy HH:mm:ss.fff");
-            int currentPlayTime = (int)(PlayerData.instance.playTime * 100);
+            int currentPlayTime = (int)((PlayerData.instance?.playTime ?? 0f) * 100);
 
             lastScene = GameManager.instance?.sceneName ?? lastScene;
             manualStartScene = string.IsNullOrWhiteSpace(lastScene) ? "Manual" : lastScene;
@@ -142,7 +148,8 @@ namespace ReplayLogger
 
             try
             {
-                lastString = KeyloggerLogEncryption.GenerateKeyAndIV();
+                activeEncryptionSession = KeyloggerLogEncryption.CreateSession();
+                lastString = activeEncryptionSession.SessionKeyBlob;
                 currentNameLog = Path.Combine(dllDir, $"KeyLog{DateTime.UtcNow.Ticks}.log");
                 DamageAnfInv?.Clear();
                 InvWarn?.Clear();
@@ -152,7 +159,7 @@ namespace ReplayLogger
                 InvWarn = new BufferedLogSection($"{currentNameLog}.warn.tmp", BufferedSectionThreshold);
                 speedWarnBuffer = new BufferedLogSection($"{currentNameLog}.speed.tmp", BufferedSectionThreshold);
                 hitWarnBuffer = new BufferedLogSection($"{currentNameLog}.hit.tmp", BufferedSectionThreshold);
-                writer = new BlockLogWriter(currentNameLog, lastString, BlockSizeBytes, BlockMaxAgeMs);
+                writer = new AsyncBlockLogWriter(currentNameLog, lastString, activeEncryptionSession, BlockSizeBytes, BlockMaxAgeMs, LogQueueCapacity);
 
                 AheSettingsManager.RefreshSnapshot();
                 speedWarnTracker.Reset(Mathf.Max(Time.timeScale, 0f));
@@ -161,13 +168,27 @@ namespace ReplayLogger
                 debugModEventsTracker.Reset(initialDebugUiVisible);
                 debugMenuTracker.Reset(initialDebugUiVisible);
                 debugHotkeysTracker.InitializeBindings();
-                keyLogBuffer.Clear();
-                lastKeyLogFlushTime = 0;
-                pressedKeys.Clear();
-                pressedKeysBuffer.Clear();
-                hasHeroBoxState = false;
+                ResetInlineTimelineCursors();
+	                keyLogBuffer.Clear();
+	                lastKeyLogFlushTime = 0;
+                lastHudElapsedSeconds = -1;
+	                pressedKeys.Clear();
+	                pressedKeysBuffer.Clear();
+	                enemyColliderBufferOverflowLogged = false;
+                enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
+	                enemyHealthManagerByGameObject.Clear();
+	                enemyHealthManagerCacheCleanupBuffer.Clear();
+	                lastEnemyHealthCacheCleanupTime = 0f;
+	                infoBoss.Clear();
+	                uniqueBossByGameObject.Clear();
+	                uniqueBossSet.Clear();
+	                infoBossKeysBuffer.Clear();
+	                uniqueBossBuffersDirty = true;
+	                hasHeroBoxState = false;
                 lastHeroBoxActive = -1;
                 heroBoxOffStartTime = -1f;
+                cachedHeroTransform = null;
+                cachedHeroBoxObject = null;
                 damageSectionStarted = false;
                 charmsChangeTracker.Reset();
 
@@ -177,11 +198,82 @@ namespace ReplayLogger
                 speedWarnTracker.LogInitial(writer, lastUnixTime);
                 InitializeDebugModHooks();
                 godhomeQolTracker.Reset();
-                godhomeQolTracker.StartFight(manualStartScene, lastUnixTime);
             }
             catch (Exception e)
             {
-                Modding.Logger.LogError("Ошибка при старте ручного лога: " + e.Message);
+                global::ReplayLogger.InternalDiagnostics.Error("ReplayLogger: failed to start manual logging: " + e.Message);
+                try
+                {
+                    writer?.Dispose();
+                }
+                catch
+                {
+                }
+
+                writer = null;
+                activeEncryptionSession = null;
+
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(currentNameLog) && File.Exists(currentNameLog))
+                    {
+                        File.Delete(currentNameLog);
+                    }
+                }
+                catch
+                {
+                }
+
+                DamageAnfInv?.Clear();
+                InvWarn?.Clear();
+                speedWarnBuffer?.Clear();
+                hitWarnBuffer?.Clear();
+                DamageAnfInv = null;
+                InvWarn = null;
+                speedWarnBuffer = null;
+                hitWarnBuffer = null;
+                AheSettingsManager.Reset();
+                ZoteSettingsManager.Reset();
+                CollectorPhasesSettingsManager.Reset();
+                godhomeQolTracker.Reset();
+                debugHotkeysTracker.Reset();
+                debugMenuTracker.Reset();
+                ResetInlineTimelineCursors();
+	                keyLogBuffer.Clear();
+	                lastKeyLogFlushTime = 0;
+                lastHudElapsedSeconds = -1;
+	                pressedKeys.Clear();
+	                pressedKeysBuffer.Clear();
+	                enemyColliderBufferOverflowLogged = false;
+                enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
+	                enemyHealthManagerByGameObject.Clear();
+	                enemyHealthManagerCacheCleanupBuffer.Clear();
+	                lastEnemyHealthCacheCleanupTime = 0f;
+	                infoBoss.Clear();
+	                uniqueBossByGameObject.Clear();
+	                uniqueBossSet.Clear();
+	                infoBossKeysBuffer.Clear();
+	                uniqueBossBuffersDirty = true;
+	                hasHeroBoxState = false;
+                lastHeroBoxActive = -1;
+                heroBoxOffStartTime = -1f;
+                cachedHeroTransform = null;
+                cachedHeroBoxObject = null;
+                damageSectionStarted = false;
+                DisposeDebugModHooks();
+                isChallengeCompleted = "-";
+                bossCounter = 0;
+                startUnixTime = 0;
+                isPlayChalange = false;
+                isManualLogging = false;
+                manualStartScene = null;
+                manualRoomHeaderWritten = false;
+                manualRoomStartUnixTime = 0;
+                manualHoldStartTime = 0f;
+                customCanvas?.DestroyCanvas();
+                customCanvas = null;
+                currentPanteon = (null, null);
+                return;
             }
 
             int seed = (int)(lastUnixTime ^ currentPlayTime);
@@ -227,13 +319,21 @@ namespace ReplayLogger
 
             if (!IsManualModeEnabled())
             {
+                bool keepToastCanvas = pantheonToastHideAtUnscaledTime > Time.unscaledTime;
                 if (!isManualLogging && customCanvas != null && customCanvas.HasCanvas)
                 {
                     customCanvas.ShowManualStatus(false);
-                    customCanvas.DestroyCanvas();
-                    customCanvas = null;
+                    if (!keepToastCanvas)
+                    {
+                        customCanvas.DestroyCanvas();
+                        customCanvas = null;
+                        pantheonToastHideAtUnscaledTime = 0f;
+                    }
                 }
-                manualStatusDelayUntil = 0f;
+                if (!keepToastCanvas)
+                {
+                    manualStatusDelayUntil = 0f;
+                }
                 return;
             }
 
@@ -259,3 +359,6 @@ namespace ReplayLogger
         }
     }
 }
+
+
+

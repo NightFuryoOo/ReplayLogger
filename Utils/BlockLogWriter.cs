@@ -1,11 +1,12 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 
 namespace ReplayLogger
 {
-    internal sealed class BlockLogWriter : StreamWriter
+    internal sealed class BlockLogWriter : StreamWriter, IEncryptionSessionProvider
     {
         private const ushort FileVersion = 2;
         private const ushort FrameMagic = 0xB10C;
@@ -19,15 +20,25 @@ namespace ReplayLogger
         private const byte RecordTypeRaw = 2;
         private const byte RecordTypeRawLine = 3;
         private const byte RecordTypeKey = 4;
+        private const int Utf8ScratchSize = 1024;
 
         private static readonly byte[] FileMagic = { (byte)'R', (byte)'P', (byte)'L', (byte)'B' };
         private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        private static readonly double StopwatchTicksToMilliseconds = 1000d / Stopwatch.Frequency;
 
         private readonly FileStream stream;
+        private readonly KeyloggerLogEncryption.Session session;
         private readonly byte[] aesKey;
         private readonly byte[] hmacKey;
         private readonly int blockSizeBytes;
         private readonly int maxBlockAgeMs;
+        private readonly Aes aes;
+        private readonly HMACSHA256 hmac;
+        private readonly RandomNumberGenerator rng;
+        private readonly long unixTimeBaseMs;
+        private readonly long timeBaseStopwatchTicks;
+        private char[] singleCharBuffer;
+        private byte[] utf8ScratchBuffer;
 
         private byte[] plaintextBuffer;
         private int plaintextCount;
@@ -35,17 +46,28 @@ namespace ReplayLogger
         private uint blockSequence;
         private bool disposed;
 
-        internal BlockLogWriter(string path, string sessionKeyBlob, int blockSizeBytes, int maxBlockAgeMs)
+        KeyloggerLogEncryption.Session IEncryptionSessionProvider.EncryptionSession => session;
+
+        internal BlockLogWriter(string path, string sessionKeyBlob, KeyloggerLogEncryption.Session session, int blockSizeBytes, int maxBlockAgeMs)
             : base(Stream.Null)
         {
-            if (!KeyloggerLogEncryption.TryGetBlockKeys(out aesKey, out hmacKey))
+            this.session = session ?? throw new ArgumentNullException(nameof(session));
+            if (!this.session.TryGetBlockKeys(out aesKey, out hmacKey))
             {
-                aesKey = Array.Empty<byte>();
-                hmacKey = Array.Empty<byte>();
+                throw new InvalidOperationException("ReplayLogger: failed to acquire block encryption keys for the logging session.");
             }
 
             this.blockSizeBytes = Math.Max(8 * 1024, blockSizeBytes);
             this.maxBlockAgeMs = Math.Max(0, maxBlockAgeMs);
+            aes = Aes.Create();
+            aes.Mode = CipherMode.CBC;
+            aes.Padding = PaddingMode.PKCS7;
+            hmac = new HMACSHA256(hmacKey);
+            rng = RandomNumberGenerator.Create();
+            singleCharBuffer = new char[1];
+            utf8ScratchBuffer = new byte[Utf8ScratchSize];
+            unixTimeBaseMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            timeBaseStopwatchTicks = Stopwatch.GetTimestamp();
 
             string dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir))
@@ -57,8 +79,8 @@ namespace ReplayLogger
             WriteFileHeader(sessionKeyBlob ?? string.Empty);
         }
 
-        internal BlockLogWriter(string path, string sessionKeyBlob)
-            : this(path, sessionKeyBlob, blockSizeBytes: 64 * 1024, maxBlockAgeMs: 5000)
+        internal BlockLogWriter(string path, string sessionKeyBlob, KeyloggerLogEncryption.Session session)
+            : this(path, sessionKeyBlob, session, blockSizeBytes: 64 * 1024, maxBlockAgeMs: 5000)
         {
         }
 
@@ -74,7 +96,13 @@ namespace ReplayLogger
 
         public override void Write(char value)
         {
-            AppendTextRecord(RecordTypeRaw, value.ToString());
+            if (disposed || singleCharBuffer == null)
+            {
+                return;
+            }
+
+            singleCharBuffer[0] = value;
+            AppendTextRecord(RecordTypeRaw, singleCharBuffer, 0, 1);
         }
 
         public override void Write(char[] buffer, int index, int count)
@@ -84,7 +112,7 @@ namespace ReplayLogger
                 return;
             }
 
-            AppendTextRecord(RecordTypeRaw, new string(buffer, index, count));
+            AppendTextRecord(RecordTypeRaw, buffer, index, count);
         }
 
         internal void WriteRawLine(string value)
@@ -119,7 +147,7 @@ namespace ReplayLogger
 
             const int payloadLength = 25;
             int recordSize = RecordHeaderSize + payloadLength;
-            long nowMs = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long nowMs = GetNowUnixTimeMilliseconds();
 
             EnsureCapacityForRecord(recordSize, nowMs);
             WriteRecordHeader(RecordTypeKey, payloadLength);
@@ -144,7 +172,7 @@ namespace ReplayLogger
                 return;
             }
 
-            FlushBlock(DateTimeOffset.Now.ToUnixTimeMilliseconds());
+            FlushBlock(GetNowUnixTimeMilliseconds());
             stream.Flush();
         }
 
@@ -159,9 +187,34 @@ namespace ReplayLogger
             if (disposing)
             {
                 Flush();
+                try
+                {
+                    hmac.Dispose();
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    aes.Dispose();
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    rng.Dispose();
+                }
+                catch
+                {
+                }
             }
 
             plaintextBuffer = null;
+            singleCharBuffer = null;
+            utf8ScratchBuffer = null;
 
             stream.Dispose();
             base.Dispose(disposing);
@@ -186,14 +239,60 @@ namespace ReplayLogger
                 return;
             }
 
+            text ??= string.Empty;
             int byteCount = Utf8.GetByteCount(text);
             int recordSize = RecordHeaderSize + byteCount;
-            long nowMs = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            long nowMs = GetNowUnixTimeMilliseconds();
 
             EnsureCapacityForRecord(recordSize, nowMs);
             WriteRecordHeader(recordType, byteCount);
-            Utf8.GetBytes(text, 0, text.Length, plaintextBuffer, plaintextCount);
-            plaintextCount += byteCount;
+
+            if (byteCount > 0)
+            {
+                if (byteCount <= utf8ScratchBuffer.Length)
+                {
+                    int encoded = Utf8.GetBytes(text, 0, text.Length, utf8ScratchBuffer, 0);
+                    Buffer.BlockCopy(utf8ScratchBuffer, 0, plaintextBuffer, plaintextCount, encoded);
+                    plaintextCount += encoded;
+                }
+                else
+                {
+                    Utf8.GetBytes(text, 0, text.Length, plaintextBuffer, plaintextCount);
+                    plaintextCount += byteCount;
+                }
+            }
+
+            FlushIfThresholdReached(nowMs);
+        }
+
+        private void AppendTextRecord(byte recordType, char[] buffer, int index, int count)
+        {
+            if (disposed || buffer == null || count <= 0)
+            {
+                return;
+            }
+
+            int byteCount = Utf8.GetByteCount(buffer, index, count);
+            int recordSize = RecordHeaderSize + byteCount;
+            long nowMs = GetNowUnixTimeMilliseconds();
+
+            EnsureCapacityForRecord(recordSize, nowMs);
+            WriteRecordHeader(recordType, byteCount);
+
+            if (byteCount > 0)
+            {
+                if (byteCount <= utf8ScratchBuffer.Length)
+                {
+                    int encoded = Utf8.GetBytes(buffer, index, count, utf8ScratchBuffer, 0);
+                    Buffer.BlockCopy(utf8ScratchBuffer, 0, plaintextBuffer, plaintextCount, encoded);
+                    plaintextCount += encoded;
+                }
+                else
+                {
+                    int encoded = Utf8.GetBytes(buffer, index, count, plaintextBuffer, plaintextCount);
+                    plaintextCount += encoded;
+                }
+            }
 
             FlushIfThresholdReached(nowMs);
         }
@@ -216,6 +315,17 @@ namespace ReplayLogger
             }
 
             EnsureCapacity(recordSize);
+        }
+
+        private long GetNowUnixTimeMilliseconds()
+        {
+            long elapsedTicks = Stopwatch.GetTimestamp() - timeBaseStopwatchTicks;
+            if (elapsedTicks <= 0)
+            {
+                return unixTimeBaseMs;
+            }
+
+            return unixTimeBaseMs + (long)(elapsedTicks * StopwatchTicksToMilliseconds);
         }
 
         private void EnsureCapacity(int additionalBytes)
@@ -269,19 +379,13 @@ namespace ReplayLogger
             }
 
             byte[] iv = new byte[IvSize];
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                rng.GetBytes(iv);
-            }
+            rng.GetBytes(iv);
 
             byte[] ciphertext;
-            using (Aes aes = Aes.Create())
+            aes.Key = aesKey;
+            aes.IV = iv;
+            using (ICryptoTransform encryptor = aes.CreateEncryptor(aes.Key, aes.IV))
             {
-                aes.Key = aesKey;
-                aes.IV = iv;
-                aes.Mode = CipherMode.CBC;
-                aes.Padding = PaddingMode.PKCS7;
-                using ICryptoTransform encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
                 ciphertext = encryptor.TransformFinalBlock(plaintextBuffer, 0, plaintextCount);
             }
 
@@ -297,10 +401,10 @@ namespace ReplayLogger
             WriteInt32(header, ref offset, cipherLen);
             Buffer.BlockCopy(iv, 0, header, offset, IvSize);
 
-            byte[] hmac = ComputeHmac(header, ciphertext);
+            byte[] frameHmac = ComputeHmac(header, ciphertext);
             stream.Write(header, 0, header.Length);
             stream.Write(ciphertext, 0, cipherLen);
-            stream.Write(hmac, 0, hmac.Length);
+            stream.Write(frameHmac, 0, frameHmac.Length);
 
             plaintextCount = 0;
             blockStartUnixMs = 0;
@@ -309,7 +413,7 @@ namespace ReplayLogger
 
         private byte[] ComputeHmac(byte[] header, byte[] ciphertext)
         {
-            using HMACSHA256 hmac = new(hmacKey);
+            hmac.Initialize();
             hmac.TransformBlock(header, 0, header.Length, null, 0);
             hmac.TransformFinalBlock(ciphertext, 0, ciphertext.Length);
             return hmac.Hash ?? Array.Empty<byte>();

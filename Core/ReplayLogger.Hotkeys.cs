@@ -122,7 +122,7 @@ namespace ReplayLogger
 
             if (string.IsNullOrEmpty(replayLoggerDir) || !Directory.Exists(replayLoggerDir))
             {
-                Modding.Logger.LogWarn("ReplayLogger: cannot open ReplayLogger folder (path missing).");
+                global::ReplayLogger.InternalDiagnostics.Warn("ReplayLogger: cannot open ReplayLogger folder (path missing).");
                 return;
             }
 
@@ -137,7 +137,7 @@ namespace ReplayLogger
             }
             catch (Exception e)
             {
-                Modding.Logger.LogError($"ReplayLogger: failed to open mods folder: {e.Message}");
+                global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to open mods folder: {e.Message}");
             }
         }
 
@@ -178,3 +178,6 @@ namespace ReplayLogger
         }
     }
 }
+
+
+

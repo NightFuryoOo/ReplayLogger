@@ -1,11 +1,20 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!-- Change this to the path of your modded HK installation -->
-    <HollowKnightRefs>C:\Program Files (x86)\Steam\steamapps\common\Hollow Knight\hollow_knight_Data\Managed</HollowKnightRefs>
-    <!-- Change this to the path where you want the ready-to-upload exports to be -->
-    <ExportDir>C:\Users\User\Documents\HKModsExport</ExportDir>
+    <!-- Defaults can be overridden with /p:HollowKnightRefs=... and /p:ExportDir=...
+         or environment variables REPLAYLOGGER_HK_REFS / REPLAYLOGGER_EXPORT_DIR -->
+    <DefaultHollowKnightRefs>C:\Program Files (x86)\Steam\steamapps\common\Hollow Knight\hollow_knight_Data\Managed</DefaultHollowKnightRefs>
+    <DefaultExportDir>C:\Users\User\Documents\HKModsExport</DefaultExportDir>
+    <HollowKnightRefs Condition="'$(HollowKnightRefs)'=='' and '$(REPLAYLOGGER_HK_REFS)'!=''">$(REPLAYLOGGER_HK_REFS)</HollowKnightRefs>
+    <ExportDir Condition="'$(ExportDir)'=='' and '$(REPLAYLOGGER_EXPORT_DIR)'!=''">$(REPLAYLOGGER_EXPORT_DIR)</ExportDir>
+    <HollowKnightRefs Condition="'$(HollowKnightRefs)'==''">$(DefaultHollowKnightRefs)</HollowKnightRefs>
+    <ExportDir Condition="'$(ExportDir)'==''">$(DefaultExportDir)</ExportDir>
     <!-- Uncomment this to generate a documentation file to be included with the mod -->
     <!--<DocumentationFile>$(OutputPath)/$(AssemblyTitle).xml</DocumentationFile>-->
+  </PropertyGroup>
+  <PropertyGroup>
+    <UseModdingStubs Condition="'$(UseModdingStubs)'==''">false</UseModdingStubs>
+    <HasModdingDll Condition="Exists('$(HollowKnightRefs)\\Mods\\ModdingApi\\Modding.dll') Or Exists('$(HollowKnightRefs)\\Modding.dll')">true</HasModdingDll>
+    <HasModdingDll Condition="'$(HasModdingDll)'==''">false</HasModdingDll>
   </PropertyGroup>
   <PropertyGroup>
     <RootNamespace>ReplayLogger</RootNamespace>
@@ -22,46 +31,92 @@
     <OutputPath>bin\$(Configuration)\net472\</OutputPath>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <RunPostBuildEvent>Always</RunPostBuildEvent>
+    <RunPostBuildEvent>OnBuildSuccess</RunPostBuildEvent>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <DefineConstants>$(DefineConstants)</DefineConstants>
   </PropertyGroup>
-  <Target Name="CopyMod" AfterTargets="PostBuildEvent">
-    <RemoveDir Condition="Exists('$(ExportDir)/$(TargetName)/')" Directories="$(ExportDir)/$(TargetName)/" />
-    <MakeDir Directories="$(ExportDir)/$(TargetName)/" />
-    <MakeDir Directories="$(ExportDir)/$(TargetName)/zip/" />
-    <MakeDir Condition="!Exists('$(HollowKnightRefs)/Mods/$(TargetName)/')" Directories="$(HollowKnightRefs)/Mods/$(TargetName)/" />
+  <Target Name="WarnWhenUsingModdingStubs" BeforeTargets="CoreCompile" Condition="'$(UseModdingStubs)'=='true'">
+    <Warning Text="UseModdingStubs=true: build is for local compile fallback only and will not be loadable by Hollow Knight Modding API runtime." />
+  </Target>
+  <Target Name="CopyMod" AfterTargets="PostBuildEvent" Condition="Exists('$(TargetPath)')">
+    <PropertyGroup>
+      <ResolvedTargetName Condition="'$(TargetName)'!=''">$(TargetName)</ResolvedTargetName>
+      <ResolvedTargetName Condition="'$(ResolvedTargetName)'=='' and '$(AssemblyName)'!=''">$(AssemblyName)</ResolvedTargetName>
+      <ResolvedTargetName Condition="'$(ResolvedTargetName)'==''">ReplayLogger</ResolvedTargetName>
+      <InstalledModDir>$(HollowKnightRefs)\Mods\$(ResolvedTargetName)</InstalledModDir>
+      <InstalledDllPath>$(InstalledModDir)\$(ResolvedTargetName).dll</InstalledDllPath>
+      <ExportModRoot>$(ExportDir)\$(ResolvedTargetName)</ExportModRoot>
+      <ExportConfigRoot>$(ExportModRoot)\$(Configuration)</ExportConfigRoot>
+      <ExportZipStageDir>$(ExportConfigRoot)\zip</ExportZipStageDir>
+      <ExportDllPath>$(ExportConfigRoot)\$(ResolvedTargetName).dll</ExportDllPath>
+      <ExportZipPath>$(ExportConfigRoot)\$(ResolvedTargetName).zip</ExportZipPath>
+      <ExportShaPath>$(ExportConfigRoot)\SHA.txt</ExportShaPath>
+    </PropertyGroup>
+    <ItemGroup>
+      <BuiltOutputFiles Include="$(TargetPath)" />
+      <BuiltOutputFiles Include="$(TargetDir)/$(TargetName).pdb" Condition="Exists('$(TargetDir)/$(TargetName).pdb')" />
+      <BuiltOutputFiles Include="$(TargetDir)/$(TargetName).xml" Condition="'$(DocumentationFile)' != '' And Exists('$(TargetDir)/$(TargetName).xml')" />
+      <ZipOutputFiles Include="ReadMe.md" />
+      <ZipOutputFiles Include="@(BuiltOutputFiles)" />
+    </ItemGroup>
 
-    <Copy Condition="'$(DocumentationFile)' != ''" SourceFiles="$(TargetPath);$(TargetDir)/$(TargetName).pdb;$(TargetDir)/$(TargetName).xml" DestinationFolder="$(HollowKnightRefs)/Mods/$(TargetName)/" />
-    <Copy Condition="'$(DocumentationFile)' == ''" SourceFiles="$(TargetPath);$(TargetDir)/$(TargetName).pdb" DestinationFolder="$(HollowKnightRefs)/Mods/$(TargetName)/" />
+    <RemoveDir Condition="Exists('$(ExportZipStageDir)')" Directories="$(ExportZipStageDir)" />
+    <MakeDir Directories="$(ExportConfigRoot)" />
+    <MakeDir Directories="$(ExportZipStageDir)" />
+    <MakeDir Condition="!Exists('$(InstalledModDir)')" Directories="$(InstalledModDir)" />
 
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ExportDir)/$(TargetName)/" />
+    <Copy SourceFiles="@(BuiltOutputFiles)"
+          DestinationFolder="$(InstalledModDir)"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true"
+          Retries="3"
+          RetryDelayMilliseconds="250" />
+    <Touch Files="$(InstalledDllPath)" Condition="Exists('$(InstalledDllPath)')" AlwaysCreate="true" />
+    <Error Condition="!Exists('$(InstalledDllPath)')" Text="ReplayLogger: failed to copy DLL to mod directory: $(InstalledDllPath)" />
+    <GetFileHash Files="$(TargetPath)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="BuiltDllHashItems" />
+    </GetFileHash>
+    <GetFileHash Files="$(InstalledDllPath)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="InstalledDllHashItems" />
+    </GetFileHash>
+    <PropertyGroup>
+      <BuiltDllHash>@(BuiltDllHashItems->'%(FileHash)')</BuiltDllHash>
+      <InstalledDllHash>@(InstalledDllHashItems->'%(FileHash)')</InstalledDllHash>
+    </PropertyGroup>
+    <Error Condition="'$(BuiltDllHash)'!='$(InstalledDllHash)'" Text="ReplayLogger: copied DLL hash mismatch. Built=$(BuiltDllHash), Installed=$(InstalledDllHash), Target=$(InstalledDllPath)" />
+    <Message Importance="High" Text="ReplayLogger installed DLL: $(InstalledDllPath) (SHA256: $(InstalledDllHash))" />
+
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ExportConfigRoot)" />
+
+    <Copy SourceFiles="@(ZipOutputFiles)" DestinationFolder="$(ExportZipStageDir)" />
     
-    <Copy Condition="'$(DocumentationFile)' != ''" SourceFiles="ReadMe.md;$(TargetPath);$(TargetDir)/$(TargetName).pdb;$(TargetDir)/$(TargetName).xml" DestinationFolder="$(ExportDir)/$(TargetName)/zip/" />
-    <Copy Condition="'$(DocumentationFile)' == ''" SourceFiles="ReadMe.md;$(TargetPath);$(TargetDir)/$(TargetName).pdb" DestinationFolder="$(ExportDir)/$(TargetName)/zip/" />
-    
-    <ZipDirectory SourceDirectory="$(ExportDir)/$(TargetName)/zip/" DestinationFile="$(ExportDir)/$(TargetName)/$(TargetName).zip" />
-    <RemoveDir Directories="$(ExportDir)/$(TargetName)/zip/" />
+    <Delete Files="$(ExportZipPath)" Condition="Exists('$(ExportZipPath)')" />
+    <ZipDirectory SourceDirectory="$(ExportZipStageDir)" DestinationFile="$(ExportZipPath)" />
+    <RemoveDir Directories="$(ExportZipStageDir)" />
 
     <PropertyGroup>
       <OutputFileString>SHA256 - $(AssemblyTitle).dll, Version $(AssemblyVersion):</OutputFileString>
     </PropertyGroup>
-    <GetFileHash Files="$(ExportDir)/$(TargetName)/$(TargetName).dll" Algorithm="SHA256">
+    <GetFileHash Files="$(ExportDllPath)" Algorithm="SHA256">
       <Output TaskParameter="Items" ItemName="FilesWithHashes" />
     </GetFileHash>
     <PropertyGroup>
       <OutputZipString>SHA256 - $(AssemblyTitle).zip:</OutputZipString>
     </PropertyGroup>
-    <GetFileHash Files="$(ExportDir)/$(TargetName)/$(TargetName).zip" Algorithm="SHA256">
+    <GetFileHash Files="$(ExportZipPath)" Algorithm="SHA256">
       <Output TaskParameter="Items" ItemName="ZipFilesWithHashes" />
     </GetFileHash>
-    <WriteLinesToFile File="$(ExportDir)/$(TargetName)/SHA.txt" Lines="$(OutputFileString);@(FilesWithHashes->'%(FileHash)');$(OutputZipString);@(ZipFilesWithHashes->'%(FileHash)')" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(ExportShaPath)" Lines="$(OutputFileString);@(FilesWithHashes->'%(FileHash)');$(OutputZipString);@(ZipFilesWithHashes->'%(FileHash)')" Overwrite="true" Encoding="UTF-8" />
   </Target>
   <ItemGroup>
     <Compile Remove="temp\**\*.cs" />
     <Compile Remove="temp\decomp\**\*.cs" />
     <Compile Remove="temp\decomp_latest\**\*.cs" />
+    <Compile Remove="Stubs\ModdingStubs.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseModdingStubs)'=='true'">
+    <Compile Include="Stubs\ModdingStubs.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Resources\ElegantKey.png" />
@@ -82,6 +137,12 @@
     </Reference>
     <Reference Include="MMHOOK_PlayMaker">
       <HintPath>$(HollowKnightRefs)/MMHOOK_PlayMaker.dll</HintPath>
+    </Reference>
+    <Reference Include="Modding" Condition="Exists('$(HollowKnightRefs)/Mods/ModdingApi/Modding.dll')">
+      <HintPath>$(HollowKnightRefs)/Mods/ModdingApi/Modding.dll</HintPath>
+    </Reference>
+    <Reference Include="Modding" Condition="!Exists('$(HollowKnightRefs)/Mods/ModdingApi/Modding.dll') And Exists('$(HollowKnightRefs)/Modding.dll')">
+      <HintPath>$(HollowKnightRefs)/Modding.dll</HintPath>
     </Reference>
     <Reference Include="Mono.Cecil">
       <HintPath>$(HollowKnightRefs)/Mono.Cecil.dll</HintPath>

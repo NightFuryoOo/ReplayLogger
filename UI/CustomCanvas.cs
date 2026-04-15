@@ -35,6 +35,7 @@ namespace ReplayLogger
         private bool savedNumberActive;
         private bool savedTimeActive;
         private int toastToken;
+        private string lastTimeText;
         public bool HasCanvas => _canvas != null;
 
         public CustomCanvas(NumberInCanvas number, LoadingSprite loadingSprite)
@@ -48,16 +49,27 @@ namespace ReplayLogger
 
         public void StartUpdateSprite()
         {
-            _canvas?.GetComponent<MonoBehaviour>().StartCoroutine(UpdateSprite());
+            GetCoroutineHost()?.StartCoroutine(UpdateSprite());
         }
 
         public void CreateCanvas()
         {
             if (_canvas != null) return;
 
-            _canvas = CanvasUtil.CreateCanvas(RenderMode.ScreenSpaceOverlay, new Vector2(1920, 1080));
+            _canvas = new GameObject("ReplayLoggerCanvas");
+            Canvas canvas = _canvas.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.pixelPerfect = false;
 
-            CanvasGroup canvasGroup = _canvas.GetComponent<CanvasGroup>();
+            CanvasScaler scaler = _canvas.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+            scaler.matchWidthOrHeight = 0.5f;
+
+            _canvas.AddComponent<GraphicRaycaster>();
+            CanvasGroup canvasGroup = _canvas.AddComponent<CanvasGroup>();
+            _canvas.AddComponent<CanvasCoroutineHost>();
             canvasGroup.interactable = false;
             canvasGroup.blocksRaycasts = false;
 
@@ -110,7 +122,7 @@ namespace ReplayLogger
                 return;
             }
 
-            _canvas.GetComponent<MonoBehaviour>()?.StartCoroutine(DestroyAfterDelay(seconds));
+            GetCoroutineHost()?.StartCoroutine(DestroyAfterDelay(seconds));
         }
 
         private Image CreateSprite(GameObject canvas, Sprite sprite, Vector2 pos, Vector2 size)
@@ -187,15 +199,30 @@ namespace ReplayLogger
 
         public void UpdateWatermark(KeyCode keyCode)
         {
-            numberInCanvas.NextGeneration(keyCode.ToString());
+            if (numberInCanvas == null || prefabNumberInCanvas == null)
+            {
+                return;
+            }
 
+            numberInCanvas.NextGeneration(keyCode);
             prefabNumberInCanvas.text = numberInCanvas.Number.ToString();
-
             prefabNumberInCanvas.color = numberInCanvas.Color;
         }
         public void UpdateTime(string time)
         {
-            timeInCanvas.text = time;
+            if (timeInCanvas == null)
+            {
+                return;
+            }
+
+            string value = time ?? string.Empty;
+            if (string.Equals(lastTimeText, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            lastTimeText = value;
+            timeInCanvas.text = value;
         }
 
         public static Sprite LoadEmbeddedSprite(string resourceName)
@@ -218,7 +245,7 @@ namespace ReplayLogger
             }
             else
             {
-                Modding.Logger.Log("Resource not found: " + fullResourceName);
+                global::ReplayLogger.InternalDiagnostics.Info("Resource not found: " + fullResourceName);
                 return null;
             }
         }
@@ -268,7 +295,7 @@ namespace ReplayLogger
 
             savedFileToast.text = fileName;
             savedFileToast.gameObject.SetActive(true);
-            _canvas.GetComponent<MonoBehaviour>()?.StartCoroutine(HideToastAfterDelay(seconds, token));
+            GetCoroutineHost()?.StartCoroutine(HideToastAfterDelay(seconds, token));
         }
 
         public void ShowManualStatus(bool show)
@@ -333,5 +360,17 @@ namespace ReplayLogger
             yield return new WaitForSecondsRealtime(seconds);
             DestroyCanvas();
         }
+
+        private CanvasCoroutineHost GetCoroutineHost()
+        {
+            return _canvas != null ? _canvas.GetComponent<CanvasCoroutineHost>() : null;
+        }
+    }
+
+    internal sealed class CanvasCoroutineHost : MonoBehaviour
+    {
     }
 }
+
+
+

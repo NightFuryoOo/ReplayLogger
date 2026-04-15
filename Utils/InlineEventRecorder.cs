@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using UnityEngine;
@@ -10,16 +11,28 @@ namespace ReplayLogger
         private static BinaryEventLog activeLog;
         private static string activePath;
         private static string activeMetaPath;
+        private static KeyloggerLogEncryption.Session activeSession;
         private static bool recoveryAttempted;
+        private static readonly Dictionary<Color32, string> colorHexCache = new();
 
         internal static bool IsActive => activeLog != null;
 
         internal static void Start(string basePath)
         {
-            Start(basePath, null);
+            Start(basePath, null, null);
         }
 
         internal static void Start(string basePath, string sessionKeyBlob)
+        {
+            Start(basePath, sessionKeyBlob, null);
+        }
+
+        internal static void Start(string basePath, KeyloggerLogEncryption.Session session)
+        {
+            Start(basePath, session?.SessionKeyBlob, session);
+        }
+
+        private static void Start(string basePath, string sessionKeyBlob, KeyloggerLogEncryption.Session session)
         {
             Stop(discard: true);
 
@@ -30,8 +43,9 @@ namespace ReplayLogger
 
             activePath = basePath + ".events.bin";
             activeMetaPath = basePath + ".events.meta";
+            activeSession = session;
             activeLog = new BinaryEventLog(activePath);
-            WriteRecoveryMeta(sessionKeyBlob);
+            WriteRecoveryMeta(sessionKeyBlob, session);
         }
 
         internal static void StopAndWrite(StreamWriter writer)
@@ -47,6 +61,7 @@ namespace ReplayLogger
             activeLog = null;
             activePath = null;
             activeMetaPath = null;
+            activeSession = null;
 
             BinaryEventLog.ConvertToText(path, writer);
             TryDelete(path);
@@ -66,6 +81,7 @@ namespace ReplayLogger
             activeLog = null;
             activePath = null;
             activeMetaPath = null;
+            activeSession = null;
 
             if (discard)
             {
@@ -89,9 +105,9 @@ namespace ReplayLogger
 
             string formattedKey = JoystickKeyMapper.FormatKey(keyCode);
             string status = isDown ? "+" : "-";
-            string colorHex = ColorUtility.ToHtmlStringRGBA(watermarkColor);
+            string colorHex = GetCachedColorHex(watermarkColor);
             string fpsText = fps.ToString(CultureInfo.InvariantCulture);
-            string logEntry = $"+{deltaMs}|{formattedKey}|{status}|{watermarkNumber}|#{colorHex}|{fpsText}|";
+            string logEntry = $"{deltaMs}|{formattedKey}|{status}|{watermarkNumber}|#{colorHex}|{fpsText}|";
             LogWrite.EncryptedLine(writer, logEntry);
         }
 
@@ -109,6 +125,19 @@ namespace ReplayLogger
             }
 
             LogWrite.EncryptedLine(writer, line);
+        }
+
+        private static string GetCachedColorHex(Color color)
+        {
+            Color32 key = color;
+            if (colorHexCache.TryGetValue(key, out string colorHex))
+            {
+                return colorHex;
+            }
+
+            colorHex = ColorUtility.ToHtmlStringRGBA(key);
+            colorHexCache[key] = colorHex;
+            return colorHex;
         }
 
         internal static void RecoverPendingLogs(params string[] directories)
@@ -157,14 +186,20 @@ namespace ReplayLogger
             }
         }
 
-        private static void WriteRecoveryMeta(string sessionKeyBlob)
+        private static void WriteRecoveryMeta(string sessionKeyBlob, KeyloggerLogEncryption.Session session)
         {
             if (string.IsNullOrWhiteSpace(activeMetaPath) || string.IsNullOrWhiteSpace(sessionKeyBlob))
             {
                 return;
             }
 
-            if (!KeyloggerLogEncryption.TryExportMasterKey(out byte[] key, out byte[] iv))
+            KeyloggerLogEncryption.Session effectiveSession = session ?? activeSession;
+            if (effectiveSession == null)
+            {
+                return;
+            }
+
+            if (!effectiveSession.TryExportMasterKey(out byte[] key, out byte[] iv))
             {
                 return;
             }
@@ -240,8 +275,12 @@ namespace ReplayLogger
 
             try
             {
-                KeyloggerLogEncryption.SetMasterKey(key, iv);
-                using StreamWriter writer = new(basePath, append: true);
+                if (!KeyloggerLogEncryption.TryCreateSession(key, iv, out KeyloggerLogEncryption.Session recoverySession, sessionKeyBlob))
+                {
+                    return;
+                }
+
+                using StreamWriter writer = new AsyncLogWriter(basePath, append: true, capacity: 4096, recoverySession);
                 BinaryEventLog.ConvertToText(binPath, writer);
                 LogWrite.Raw(writer, sessionKeyBlob);
             }

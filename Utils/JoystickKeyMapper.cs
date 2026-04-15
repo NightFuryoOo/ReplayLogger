@@ -28,6 +28,7 @@ namespace ReplayLogger
             { KeyCode.JoystickButton18, "JoystickButton18" },
             { KeyCode.JoystickButton19, "JoystickButton19" }
         };
+        private static readonly Dictionary<KeyCode, string> CachedFallbackNames = new();
 
         internal static string FormatKey(KeyCode keyCode)
         {
@@ -36,7 +37,14 @@ namespace ReplayLogger
                 return label;
             }
 
-            return keyCode.ToString();
+            if (CachedFallbackNames.TryGetValue(keyCode, out string cachedLabel))
+            {
+                return cachedLabel;
+            }
+
+            string fallbackLabel = keyCode.ToString();
+            CachedFallbackNames[keyCode] = fallbackLabel;
+            return fallbackLabel;
         }
     }
 }

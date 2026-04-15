@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -18,13 +18,21 @@ namespace ReplayLogger
                 blockWriter.WriteLine(plaintext);
                 return;
             }
+            if (writer is AsyncBlockLogWriter asyncBlockWriter)
+            {
+                asyncBlockWriter.WriteLine(plaintext);
+                return;
+            }
             if (writer is AsyncLogWriter asyncWriter)
             {
                 asyncWriter.WriteLine(plaintext);
                 return;
             }
 
-            writer.WriteLine(KeyloggerLogEncryption.EncryptLog(plaintext));
+            if (TryEncryptWithWriterSession(writer, plaintext, out string encrypted))
+            {
+                writer.WriteLine(encrypted);
+            }
         }
 
         internal static void Encrypted(StreamWriter writer, string plaintext)
@@ -39,13 +47,21 @@ namespace ReplayLogger
                 blockWriter.Write(plaintext);
                 return;
             }
+            if (writer is AsyncBlockLogWriter asyncBlockWriter)
+            {
+                asyncBlockWriter.Write(plaintext);
+                return;
+            }
             if (writer is AsyncLogWriter asyncWriter)
             {
                 asyncWriter.Write(plaintext);
                 return;
             }
 
-            writer.Write(KeyloggerLogEncryption.EncryptLog(plaintext));
+            if (TryEncryptWithWriterSession(writer, plaintext, out string encrypted))
+            {
+                writer.Write(encrypted);
+            }
         }
 
         internal static void EncryptedLines(StreamWriter writer, IReadOnlyList<string> plaintextLines)
@@ -60,6 +76,11 @@ namespace ReplayLogger
                 blockWriter.WriteLines(plaintextLines);
                 return;
             }
+            if (writer is AsyncBlockLogWriter asyncBlockWriter)
+            {
+                asyncBlockWriter.WriteLines(plaintextLines);
+                return;
+            }
             if (writer is AsyncLogWriter asyncWriter)
             {
                 foreach (string line in plaintextLines)
@@ -70,14 +91,29 @@ namespace ReplayLogger
             }
 
             string newline = writer.NewLine;
-            StringBuilder builder = new();
-            foreach (string line in plaintextLines)
+            StringBuilder builder = TempObjectPools.RentStringBuilder(1024);
+            try
             {
-                builder.Append(KeyloggerLogEncryption.EncryptLog(line ?? string.Empty));
-                builder.Append(newline);
-            }
+                IEncryptionSessionProvider sessionProvider = writer as IEncryptionSessionProvider;
+                KeyloggerLogEncryption.Session session = sessionProvider?.EncryptionSession;
+                if (session == null)
+                {
+                    global::ReplayLogger.InternalDiagnostics.Error("ReplayLogger: missing encryption session for StreamWriter fallback; encrypted batch write was skipped.");
+                    return;
+                }
 
-            writer.Write(builder.ToString());
+                foreach (string line in plaintextLines)
+                {
+                    builder.Append(session.EncryptLog(line ?? string.Empty));
+                    builder.Append(newline);
+                }
+
+                writer.Write(builder.ToString());
+            }
+            finally
+            {
+                TempObjectPools.ReturnStringBuilder(builder);
+            }
         }
 
         internal static void RawLine(StreamWriter writer, string raw)
@@ -90,6 +126,11 @@ namespace ReplayLogger
             if (writer is BlockLogWriter blockWriter)
             {
                 blockWriter.WriteRawLine(raw);
+                return;
+            }
+            if (writer is AsyncBlockLogWriter asyncBlockWriter)
+            {
+                asyncBlockWriter.WriteRawLine(raw);
                 return;
             }
             if (writer is AsyncLogWriter asyncWriter)
@@ -113,6 +154,11 @@ namespace ReplayLogger
                 blockWriter.WriteRaw(raw);
                 return;
             }
+            if (writer is AsyncBlockLogWriter asyncBlockWriter)
+            {
+                asyncBlockWriter.WriteRaw(raw);
+                return;
+            }
             if (writer is AsyncLogWriter asyncWriter)
             {
                 asyncWriter.WriteRaw(raw);
@@ -121,5 +167,23 @@ namespace ReplayLogger
 
             writer.Write(raw);
         }
+
+        private static bool TryEncryptWithWriterSession(StreamWriter writer, string plaintext, out string encrypted)
+        {
+            encrypted = null;
+            IEncryptionSessionProvider sessionProvider = writer as IEncryptionSessionProvider;
+            KeyloggerLogEncryption.Session session = sessionProvider?.EncryptionSession;
+            if (session == null)
+            {
+                global::ReplayLogger.InternalDiagnostics.Error("ReplayLogger: missing encryption session for StreamWriter fallback; encrypted write was skipped.");
+                return false;
+            }
+
+            encrypted = session.EncryptLog(plaintext ?? string.Empty);
+            return !string.IsNullOrEmpty(encrypted);
+        }
     }
 }
+
+
+

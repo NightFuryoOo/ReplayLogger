@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 
 namespace ReplayLogger
@@ -20,6 +20,7 @@ namespace ReplayLogger
         private static FieldInfo saveSettingsField;
         private static FieldInfo altStatueMawlekField;
         private static PropertyInfo altStatueMawlekProperty;
+        private static bool readFailureLogged;
 
         internal static bool IsAltStatueMawlekEnabled()
         {
@@ -30,7 +31,7 @@ namespace ReplayLogger
                     return false;
                 }
 
-                object modInstance = instanceField.GetValue(null);
+                object modInstance = instanceField.GetCachedValue(null);
                 if (modInstance == null)
                 {
                     return false;
@@ -43,13 +44,19 @@ namespace ReplayLogger
                 }
 
                 object raw = altStatueMawlekProperty != null
-                    ? altStatueMawlekProperty.GetValue(settings)
-                    : altStatueMawlekField?.GetValue(settings);
+                    ? altStatueMawlekProperty.GetCachedValue(settings)
+                    : altStatueMawlekField?.GetCachedValue(settings);
 
+                readFailureLogged = false;
                 return raw is bool value && value;
             }
-            catch
+            catch (Exception ex)
             {
+                if (!readFailureLogged)
+                {
+                    readFailureLogged = true;
+                    global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to read Pale Court statue setting AltStatueMawlek: {ex.Message}");
+                }
                 return false;
             }
         }
@@ -63,12 +70,12 @@ namespace ReplayLogger
 
             if (saveSettingsProperty != null)
             {
-                return saveSettingsProperty.GetValue(instance);
+                return saveSettingsProperty.GetCachedValue(instance);
             }
 
             if (saveSettingsField != null)
             {
-                return saveSettingsField.GetValue(instance);
+                return saveSettingsField.GetCachedValue(instance);
             }
 
             return null;
@@ -138,3 +145,6 @@ namespace ReplayLogger
         }
     }
 }
+
+
+
