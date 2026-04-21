@@ -51,7 +51,6 @@ namespace ReplayLogger
         {
             currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
             currentBaseUnixTime = baseUnixTime;
-            long now = baseUnixTime;
 
             BossChallengeState snapshot = BuildState();
 
@@ -72,8 +71,7 @@ namespace ReplayLogger
                 return;
             }
 
-            LogFieldChange("Halve Damage [HoG Ascended]", currentState.HalveAscended, snapshot.HalveAscended, now);
-            LogFieldChange("Halve Damage [HoG Attuned]", currentState.HalveAttuned, snapshot.HalveAttuned, now);
+            long now = baseUnixTime;
             LogFieldChange("Add Lifeblood", currentState.AddLifeblood, snapshot.AddLifeblood, now);
             LogFieldChange("Lifeblood Amount", currentState.LifebloodAmount, snapshot.LifebloodAmount, now);
             LogFieldChange("Add Soul", currentState.AddSoul, snapshot.AddSoul, now);
@@ -104,8 +102,6 @@ namespace ReplayLogger
             }
 
             long now = nowUnixTime;
-            LogFieldChange("Halve Damage [HoG Ascended]", currentState.HalveAscended, snapshot.HalveAscended, now);
-            LogFieldChange("Halve Damage [HoG Attuned]", currentState.HalveAttuned, snapshot.HalveAttuned, now);
             LogFieldChange("Add Lifeblood", currentState.AddLifeblood, snapshot.AddLifeblood, now);
             LogFieldChange("Lifeblood Amount", currentState.LifebloodAmount, snapshot.LifebloodAmount, now);
             LogFieldChange("Add Soul", currentState.AddSoul, snapshot.AddSoul, now);
@@ -134,8 +130,6 @@ namespace ReplayLogger
                     batch.Add($"    Initial Arena: {initialArenaName}");
                 }
                 batch.Add("    State:");
-                batch.Add($"      Halve Damage [HoG Ascended]: {FormatOptionalToggle(initialState.HalveAscended)}");
-                batch.Add($"      Halve Damage [HoG Attuned]: {FormatOptionalToggle(initialState.HalveAttuned)}");
                 batch.Add($"      Add Lifeblood: {FormatOptionalToggle(initialState.AddLifeblood)}");
                 batch.Add($"      Lifeblood Amount: {FormatOptionalInt(initialState.LifebloodAmount)}");
                 batch.Add($"      Add Soul: {FormatOptionalToggle(initialState.AddSoul)}");
@@ -163,14 +157,10 @@ namespace ReplayLogger
 
         private BossChallengeState BuildState()
         {
-            bool hasHalveAscended = TryGetModuleEnabled("HalveDamageHoGAscendedOrAbove", out bool halveAscended);
-            bool hasHalveAttuned = TryGetModuleEnabled("HalveDamageHoGAttuned", out bool halveAttuned);
             bool hasAddLifeblood = TryGetModuleEnabled("AddLifeblood", out bool addLifeblood);
             bool hasAddSoul = TryGetModuleEnabled("AddSoul", out bool addSoul);
 
             return new BossChallengeState(
-                hasHalveAscended ? new Optional<bool>(halveAscended) : Optional<bool>.None,
-                hasHalveAttuned ? new Optional<bool>(halveAttuned) : Optional<bool>.None,
                 hasAddLifeblood ? new Optional<bool>(addLifeblood) : Optional<bool>.None,
                 TryGetLifebloodAmount(out int lifebloodAmount) ? new Optional<int>(lifebloodAmount) : Optional<int>.None,
                 hasAddSoul ? new Optional<bool>(addSoul) : Optional<bool>.None,
@@ -433,23 +423,17 @@ namespace ReplayLogger
         private readonly struct BossChallengeState
         {
             internal BossChallengeState(
-                Optional<bool> halveAscended,
-                Optional<bool> halveAttuned,
                 Optional<bool> addLifeblood,
                 Optional<int> lifebloodAmount,
                 Optional<bool> addSoul,
                 Optional<int> soulAmount)
             {
-                HalveAscended = halveAscended;
-                HalveAttuned = halveAttuned;
                 AddLifeblood = addLifeblood;
                 LifebloodAmount = lifebloodAmount;
                 AddSoul = addSoul;
                 SoulAmount = soulAmount;
             }
 
-            internal Optional<bool> HalveAscended { get; }
-            internal Optional<bool> HalveAttuned { get; }
             internal Optional<bool> AddLifeblood { get; }
             internal Optional<int> LifebloodAmount { get; }
             internal Optional<bool> AddSoul { get; }

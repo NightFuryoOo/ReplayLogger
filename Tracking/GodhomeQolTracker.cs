@@ -11,10 +11,13 @@ namespace ReplayLogger
         private readonly CarefreeMelodyResetTracker carefreeMelodyReset = new();
         private readonly BossChallengeSettingsTracker bossChallengeSettings = new();
         private readonly GodhomeQolBossManipulateTracker bossManipulateSettings = new();
+        private readonly GodhomeQolCheatsTracker cheatsSettings = new();
         private readonly GearSwitcherSettingsTracker gearSwitcherSettings = new();
         private long lastUpdateTime;
         private int stablePollCount;
         private string lastArenaName;
+        private bool includeBossManipulate = true;
+        private bool includeBossChallenge = true;
         private const int ActivePollMs = 250;
         private const int NormalPollMs = 1000;
         private const int IdlePollMs = 2000;
@@ -27,22 +30,35 @@ namespace ReplayLogger
             carefreeMelodyReset.Reset();
             bossChallengeSettings.Reset();
             bossManipulateSettings.Reset();
+            cheatsSettings.Reset();
             gearSwitcherSettings.Reset();
             lastUpdateTime = 0;
             stablePollCount = 0;
             lastArenaName = null;
+            includeBossManipulate = true;
+            includeBossChallenge = true;
         }
 
-        public void StartFight(string arenaName, long baseUnixTime, bool includeBossManipulate = true)
+        public void StartFight(string arenaName, long baseUnixTime, bool includeBossManipulate = true, bool includeBossChallenge = true)
         {
+            this.includeBossManipulate = includeBossManipulate;
+            this.includeBossChallenge = includeBossChallenge;
             fastSuperDash.StartFight(arenaName, baseUnixTime);
             dreamshieldSettings.StartFight(arenaName, baseUnixTime);
             carefreeMelodyReset.StartFight(arenaName, baseUnixTime);
-            bossChallengeSettings.StartFight(arenaName, baseUnixTime);
+            if (this.includeBossChallenge)
+            {
+                bossChallengeSettings.StartFight(arenaName, baseUnixTime);
+            }
+            else
+            {
+                bossChallengeSettings.Reset();
+            }
             if (includeBossManipulate)
             {
                 bossManipulateSettings.StartFight(arenaName, baseUnixTime);
             }
+            cheatsSettings.StartFight(arenaName, baseUnixTime);
             gearSwitcherSettings.StartFight(arenaName, baseUnixTime);
             lastUpdateTime = 0;
             stablePollCount = 0;
@@ -72,8 +88,15 @@ namespace ReplayLogger
             fastSuperDash.Update(arenaName, now);
             dreamshieldSettings.Update(arenaName, now);
             carefreeMelodyReset.Update(arenaName, now);
-            bossChallengeSettings.Update(arenaName, now);
-            bossManipulateSettings.Update(arenaName, now);
+            if (includeBossChallenge)
+            {
+                bossChallengeSettings.Update(arenaName, now);
+            }
+            if (includeBossManipulate)
+            {
+                bossManipulateSettings.Update(arenaName, now);
+            }
+            cheatsSettings.Update(arenaName, now);
             gearSwitcherSettings.Update(arenaName, now);
 
             if (debugUiVisible)
@@ -93,7 +116,13 @@ namespace ReplayLogger
                 return;
             }
 
-            if (!fastSuperDash.HasData && !dreamshieldSettings.HasData && !carefreeMelodyReset.HasData && !bossChallengeSettings.HasData && !bossManipulateSettings.HasData && !gearSwitcherSettings.HasData)
+            if (!fastSuperDash.HasData &&
+                !dreamshieldSettings.HasData &&
+                !carefreeMelodyReset.HasData &&
+                !(includeBossChallenge && bossChallengeSettings.HasData) &&
+                !bossManipulateSettings.HasData &&
+                !cheatsSettings.HasData &&
+                !gearSwitcherSettings.HasData)
             {
                 return;
             }
@@ -138,7 +167,7 @@ namespace ReplayLogger
                     blocksWritten++;
                 }
 
-                if (bossChallengeSettings.HasData)
+                if (includeBossChallenge && bossChallengeSettings.HasData)
                 {
                     if (blocksWritten > 0)
                     {
@@ -155,6 +184,16 @@ namespace ReplayLogger
                         LogWrite.EncryptedLine(writer, blockSeparator);
                     }
                     bossManipulateSettings.WriteSection(writer);
+                    blocksWritten++;
+                }
+
+                if (cheatsSettings.HasData)
+                {
+                    if (blocksWritten > 0)
+                    {
+                        LogWrite.EncryptedLine(writer, blockSeparator);
+                    }
+                    cheatsSettings.WriteSection(writer);
                     blocksWritten++;
                 }
 

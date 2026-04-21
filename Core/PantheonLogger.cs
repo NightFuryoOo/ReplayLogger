@@ -149,6 +149,9 @@ namespace ReplayLogger
             On.HealthManager.TakeDamage += HealthManager_TakeDamage;
             On.SceneLoad.RecordEndTime += SceneLoad_RecordEndTime;
             On.SpellFluke.DoDamage += SpellFluke_DoDamage;
+            On.DamageEnemies.DoDamage += DamageEnemies_DoDamage;
+            On.HitTaker.Hit += HitTaker_Hit;
+            On.ExtraDamageable.RecieveExtraDamage += ExtraDamageable_RecieveExtraDamage;
 
             ModHooks.HitInstanceHook += ModHooks_HitInstanceHook;
             ModHooks.AfterTakeDamageHook += ModHooks_AfterTakeDamageHook;
@@ -258,8 +261,25 @@ namespace ReplayLogger
 
         private HitInstance ModHooks_HitInstanceHook(HutongGames.PlayMaker.Fsm owner, HitInstance hit)
         {
-            if (owner == null || owner.GameObject == null || !isPlayChalange || writer == null)
+            if (!isPlayChalange || writer == null)
             {
+                return hit;
+            }
+
+            if (owner == null || owner.GameObject == null)
+            {
+                string fallbackScene = ResolveDamageChangeSceneTag();
+                if (!string.IsNullOrEmpty(fallbackScene))
+                {
+                    CharmDamageTracker.TrackFromHitInstance(
+                        isPlayChalange,
+                        writer,
+                        damageChangeTracker,
+                        fallbackScene,
+                        lastUnixTime,
+                        GetCachedFrameUnixTimeOrNow(),
+                        hit);
+                }
                 return hit;
             }
 
@@ -458,6 +478,17 @@ namespace ReplayLogger
             {
                 return;
             }
+
+            CharmDamageTracker.TrackFromHitWithActualDamage(
+                isPlayChalange,
+                writer,
+                damageChangeTracker,
+                activeSceneName,
+                lastUnixTime,
+                GetCachedFrameUnixTimeOrNow(),
+                hitInstance,
+                hpBefore - hpAfter,
+                self.gameObject);
 
             TrackEnemyHealthManager(self);
             int maxHp = Math.Max(hpBefore, hpAfter);
@@ -913,7 +944,13 @@ namespace ReplayLogger
                 return;
             }
 
-            string arena = lastScene;
+            string arena = isManualLogging
+                ? (GameManager.instance?.sceneName ?? lastScene)
+                : lastScene;
+            if (string.IsNullOrWhiteSpace(arena))
+            {
+                arena = lastScene;
+            }
             bool debugUiVisible = false;
             if (DebugModIntegration.TryGetFrameSnapshot(out DebugModFrameSnapshot debugSnapshot))
             {
@@ -1447,6 +1484,24 @@ namespace ReplayLogger
             InvWarn?.Add(warning);
         }
 
+        private void AppendActiveInvDurationWarning(long nowUnixTime)
+        {
+            if (!isInvincible)
+            {
+                return;
+            }
+
+            EnsureUniqueBossBuffers();
+            string hpInfo = BuildTrackedHpInfo(uniqueBossByGameObject.Values);
+            string duration = invTimer.ToString("F3");
+            string invLine = $"{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {duration})|";
+            DamageAnfInv?.Add(invLine);
+            InvWarn?.Add($"|{lastScene}|+{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {duration})");
+
+            isInvincible = false;
+            invTimer = 0f;
+        }
+
         private string BuildHeroBoxHpInfo(IEnumerable<HealthManager> bossList)
         {
             if (bossList == null)
@@ -1802,17 +1857,20 @@ namespace ReplayLogger
 	                          heroBoxOffStartTime = -1f;
 	                          cachedHeroTransform = null;
 	                          cachedHeroBoxObject = null;
+                              isInvincible = false;
+                              invTimer = 0f;
 	                          damageSectionStarted = false;
 	                          damageChangeTracker.Reset();
+                              CharmDamageTracker.ResetHints();
 	                          charmsChangeTracker.Reset();
                           ResetInlineTimelineCursors();
 	                        CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
                         LogWrite.EncryptedLine(writer, CoreSessionLogger.BuildEquippedCharmsLine());
                         CoreSessionLogger.WriteEncryptedSkillLines(writer, "---------------------------------------------------");
-                          speedWarnTracker.LogInitial(writer, lastUnixTime);
+                          speedWarnTracker.LogInitial(writer, self.TargetSceneName, lastUnixTime);
                           InitializeDebugModHooks();
                           godhomeQolTracker.Reset();
-                          godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false);
+                          godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false, includeBossChallenge: false);
                           cachedFrameUnixTime = lastUnixTime;
   
   
@@ -1906,7 +1964,7 @@ namespace ReplayLogger
 
                         int targetIndex = currentPanteon.list.IndexOf((self.TargetSceneName));
                         int lastSceneIndex = currentPanteon.list.IndexOf(lastScene);
-                        godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false);
+                        godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false, includeBossChallenge: false);
 
 
                         if (targetIndex == -1 || (lastSceneIndex != -1 && !(IsValidNextScene(currentPanteon.list, lastSceneIndex, self.TargetSceneName))))
@@ -2048,10 +2106,12 @@ namespace ReplayLogger
             AheSettingsManager.Reset();
             ZoteSettingsManager.Reset();
             CollectorPhasesSettingsManager.Reset();
+            CustomKnightSettingsManager.Reset();
             godhomeQolTracker.Reset();
             debugHotkeysTracker.Reset();
             debugMenuTracker.Reset();
             damageChangeTracker.Reset();
+            CharmDamageTracker.ResetHints();
             hitWarnTracker.Reset();
             ResetInlineTimelineCursors();
 
@@ -2084,6 +2144,8 @@ namespace ReplayLogger
             heroBoxOffStartTime = -1f;
             cachedHeroTransform = null;
             cachedHeroBoxObject = null;
+            isInvincible = false;
+            invTimer = 0f;
             damageSectionStarted = false;
             DisposeDebugModHooks();
 
@@ -2210,6 +2272,7 @@ namespace ReplayLogger
                 long endTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
                 string sessionTime = ConvertUnixTimeToTimeString((long)(Time.realtimeSinceStartup * 1000f));
                 FlushKeyLogBufferIfNeeded(GetCachedFrameUnixTimeOrNow(), force: true);
+                AppendActiveInvDurationWarning(endTime);
                 bool wrotePressedButtons = pressedButtonsLog != null && pressedButtonsLog.HasContent;
                 bool wroteDamageInv = DamageAnfInv != null && DamageAnfInv.HasContent;
                 if (wrotePressedButtons || wroteDamageInv)
@@ -2264,6 +2327,7 @@ namespace ReplayLogger
                 ZoteSettingsManager.WriteSettingsWithSeparator(writer);
                 CollectorPhasesSettingsManager.WriteSettingsWithSeparator(writer);
                 SafeGodseekerQolIntegration.WriteSettingsWithSeparator(writer);
+                CustomKnightSettingsManager.WriteSettingsWithSeparator(writer);
                 godhomeQolTracker.WriteSection(writer);
                 DebugModEventsWriter.Write(writer, debugModEventsTracker.Events);
                 DebugHotKeysWriter.Write(writer, debugHotkeysTracker.Bindings, debugHotkeysTracker.Activations);
@@ -2275,7 +2339,6 @@ namespace ReplayLogger
                 LogWrite.EncryptedLine(writer, "\n" + isChallengeCompleted + "\n");
 
                 HardwareFingerprint.WriteEncryptedLine(writer);
-                CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
 
                 LogWrite.Raw(writer, lastString);
                 writer.Flush();
@@ -2349,6 +2412,7 @@ namespace ReplayLogger
                 AheSettingsManager.Reset();
                 ZoteSettingsManager.Reset();
                 CollectorPhasesSettingsManager.Reset();
+                CustomKnightSettingsManager.Reset();
                 godhomeQolTracker.Reset();
                 debugHotkeysTracker.Reset();
                 debugMenuTracker.Reset();
@@ -2382,6 +2446,8 @@ namespace ReplayLogger
                 heroBoxOffStartTime = -1f;
                 cachedHeroTransform = null;
                 cachedHeroBoxObject = null;
+                isInvincible = false;
+                invTimer = 0f;
                 damageSectionStarted = false;
                 DisposeDebugModHooks();
                 isChallengeCompleted = "-";
@@ -2485,6 +2551,71 @@ namespace ReplayLogger
 
             FlukenestTracker.HandleDoDamage(isPlayChalange, writer, damageChangeTracker, damageScene, lastUnixTime, nowUnixTime, orig, self, obj, upwardRecursionAmount, burst);
         }
+
+        private void DamageEnemies_DoDamage(On.DamageEnemies.orig_DoDamage orig, DamageEnemies self, GameObject target)
+        {
+            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            string damageScene = ResolveDamageChangeSceneTag();
+            if (string.IsNullOrEmpty(damageScene))
+            {
+                damageScene = lastScene;
+            }
+
+            CharmDamageTracker.HandleDoDamage(
+                isPlayChalange,
+                writer,
+                damageChangeTracker,
+                damageScene,
+                lastUnixTime,
+                nowUnixTime,
+                orig,
+                self,
+                target);
+        }
+
+        private void HitTaker_Hit(On.HitTaker.orig_Hit orig, GameObject targetGameObject, HitInstance damageInstance, int recursionDepth)
+        {
+            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            string damageScene = ResolveDamageChangeSceneTag();
+            if (string.IsNullOrEmpty(damageScene))
+            {
+                damageScene = lastScene;
+            }
+
+            CharmDamageTracker.HandleHitTakerHit(
+                isPlayChalange,
+                writer,
+                damageChangeTracker,
+                damageScene,
+                lastUnixTime,
+                nowUnixTime,
+                orig,
+                targetGameObject,
+                damageInstance,
+                recursionDepth);
+        }
+
+        private void ExtraDamageable_RecieveExtraDamage(On.ExtraDamageable.orig_RecieveExtraDamage orig, ExtraDamageable self, ExtraDamageTypes extraDamageType)
+        {
+            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            string damageScene = ResolveDamageChangeSceneTag();
+            if (string.IsNullOrEmpty(damageScene))
+            {
+                damageScene = lastScene;
+            }
+
+            CharmDamageTracker.HandleExtraDamage(
+                isPlayChalange,
+                writer,
+                damageChangeTracker,
+                damageScene,
+                lastUnixTime,
+                nowUnixTime,
+                orig,
+                self,
+                extraDamageType);
+        }
+
     }
 }
 

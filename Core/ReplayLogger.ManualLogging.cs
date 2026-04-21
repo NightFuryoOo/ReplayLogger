@@ -91,14 +91,53 @@ namespace ReplayLogger
                 CoreSessionLogger.WriteSeparator(writer);
             }
 
+            string previousScene = manualStartScene;
             manualStartScene = sceneName;
             manualRoomStartUnixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             lastUnixTime = manualRoomStartUnixTime;
-            godhomeQolTracker.StartFight(manualStartScene, lastUnixTime);
+            bool includeBossManipulate = IsManualWorkshopBossTransition(previousScene, manualStartScene);
+            godhomeQolTracker.StartFight(manualStartScene, lastUnixTime, includeBossManipulate: includeBossManipulate);
             string dataTime = DateTimeOffset.FromUnixTimeMilliseconds(manualRoomStartUnixTime).ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss.fff");
-            DamageAnfInv?.Add($"{dataTime}|{manualRoomStartUnixTime}|{manualStartScene}|");
-            LogWrite.EncryptedLine(writer, $"{dataTime}|{manualRoomStartUnixTime}|{manualStartScene}|");
+            string currentRoomLine = $"{dataTime}|{manualRoomStartUnixTime}|{manualStartScene}|";
+            bool hasTransitionPair = manualRoomHeaderWritten &&
+                                     !string.IsNullOrWhiteSpace(previousScene) &&
+                                     !string.Equals(previousScene, manualStartScene, StringComparison.Ordinal);
+
+            if (hasTransitionPair)
+            {
+                string previousRoomLine = $"{dataTime}|{manualRoomStartUnixTime}|{previousScene}|";
+                LogWrite.EncryptedLine(writer, previousRoomLine);
+                if (DamageAnfInv != null)
+                {
+                    DamageAnfInv.Add(currentRoomLine);
+                }
+                else
+                {
+                    LogWrite.EncryptedLine(writer, currentRoomLine);
+                }
+            }
+            else
+            {
+                LogWrite.EncryptedLine(writer, currentRoomLine);
+            }
+
             manualRoomHeaderWritten = true;
+        }
+
+        private static bool IsManualWorkshopBossTransition(string previousScene, string currentScene)
+        {
+            if (!string.Equals(previousScene, "GG_Workshop", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentScene) ||
+                string.Equals(currentScene, "GG_Workshop", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return currentScene.StartsWith("GG_", StringComparison.Ordinal);
         }
 
         private void FlushManualDamageBufferForTransition()
@@ -189,13 +228,16 @@ namespace ReplayLogger
                 heroBoxOffStartTime = -1f;
                 cachedHeroTransform = null;
                 cachedHeroBoxObject = null;
+                isInvincible = false;
+                invTimer = 0f;
                 damageSectionStarted = false;
                 charmsChangeTracker.Reset();
 
                 CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
                 LogWrite.EncryptedLine(writer, CoreSessionLogger.BuildEquippedCharmsLine());
                 CoreSessionLogger.WriteEncryptedSkillLines(writer, "---------------------------------------------------");
-                speedWarnTracker.LogInitial(writer, lastUnixTime);
+                string speedArenaName = GameManager.instance?.sceneName ?? lastScene;
+                speedWarnTracker.LogInitial(writer, speedArenaName, lastUnixTime);
                 InitializeDebugModHooks();
                 godhomeQolTracker.Reset();
             }
@@ -235,6 +277,7 @@ namespace ReplayLogger
                 AheSettingsManager.Reset();
                 ZoteSettingsManager.Reset();
                 CollectorPhasesSettingsManager.Reset();
+                CustomKnightSettingsManager.Reset();
                 godhomeQolTracker.Reset();
                 debugHotkeysTracker.Reset();
                 debugMenuTracker.Reset();

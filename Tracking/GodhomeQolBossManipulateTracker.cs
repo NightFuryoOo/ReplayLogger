@@ -12,21 +12,9 @@ namespace ReplayLogger
         private const string ModuleManagerTypeName = "GodhomeQoL.ModuleManager";
         private const string BossManipulateNamespace = "GodhomeQoL.Modules.BossChallenge";
         private const string CollectorPhasesNamespace = "GodhomeQoL.Modules.CollectorPhases";
-        private const string VengeflyKingModuleName = "VengeflyKing";
-        private const string ZoteHelperModuleName = "ZoteHelper";
-        private const string CollectorPhasesModuleName = "CollectorPhases";
-
-        private static readonly HashSet<string> ExplicitBossManipulateModuleNames = new(StringComparer.Ordinal)
-        {
-            ZoteHelperModuleName,
-            CollectorPhasesModuleName
-        };
-
-        private static readonly Dictionary<string, string[]> FallbackScenesByModuleName = new(StringComparer.Ordinal)
-        {
-            { CollectorPhasesModuleName, new[] { "GG_Collector", "GG_Collector_V" } },
-            { ZoteHelperModuleName, new[] { "GG_Grey_Prince_Zote" } }
-        };
+        private const string WorkshopSceneName = "GG_Workshop";
+        private static readonly string[] CollectorScenes = { "GG_Collector", "GG_Collector_V" };
+        private static readonly string[] GreyPrinceZoteScenes = { "GG_Grey_Prince_Zote" };
 
         private static readonly string[] ExcludedSettingNameTokens =
         {
@@ -52,51 +40,27 @@ namespace ReplayLogger
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
-            if (string.IsNullOrWhiteSpace(arenaName))
+            if (IsIgnoredArena(arenaName))
             {
                 return;
             }
 
-            if (!TryGetTrackedModulesForScene(arenaName, out List<TrackedModule> tracked))
-            {
-                return;
-            }
-
-            for (int i = 0; i < tracked.Count; i++)
-            {
-                TrackedModule module = tracked[i];
-                if (!TryIsModuleEnabled(module.Instance, out bool enabled) || !enabled)
-                {
-                    continue;
-                }
-
-                List<SettingSnapshot> settings = CaptureSettings(module.SettingsFields);
-                if (settings.Count == 0)
-                {
-                    continue;
-                }
-
-                if (snapshots.Count > 0)
-                {
-                    BossManipulateSnapshot last = snapshots[snapshots.Count - 1];
-                    if (string.Equals(last.ArenaName, arenaName, StringComparison.Ordinal) &&
-                        string.Equals(last.ModuleName, module.ModuleName, StringComparison.Ordinal) &&
-                        last.UnixTime == baseUnixTime)
-                    {
-                        continue;
-                    }
-                }
-
-                snapshots.Add(new BossManipulateSnapshot(
-                    arenaName,
-                    module.ModuleName,
-                    baseUnixTime,
-                    settings.ToArray()));
-            }
+            CaptureSnapshotForArena(arenaName, baseUnixTime);
         }
 
         public void Update(string arenaName, long nowUnixTime)
         {
+            if (string.IsNullOrWhiteSpace(arenaName) || IsIgnoredArena(arenaName))
+            {
+                return;
+            }
+
+            if (HasAnySnapshotForArena(arenaName))
+            {
+                return;
+            }
+
+            CaptureSnapshotForArena(arenaName, nowUnixTime);
         }
 
         public void WriteSection(StreamWriter writer)
@@ -138,9 +102,80 @@ namespace ReplayLogger
             }
         }
 
+        private void CaptureSnapshotForArena(string arenaName, long unixTime)
+        {
+            if (string.IsNullOrWhiteSpace(arenaName) || IsIgnoredArena(arenaName))
+            {
+                return;
+            }
+
+            long timestamp = unixTime > 0
+                ? unixTime
+                : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+
+            if (!TryGetTrackedModulesForScene(arenaName, out List<TrackedModule> tracked))
+            {
+                return;
+            }
+
+            for (int i = 0; i < tracked.Count; i++)
+            {
+                TrackedModule module = tracked[i];
+                if (!TryIsModuleEnabled(module.Instance, out bool enabled) || !enabled)
+                {
+                    continue;
+                }
+
+                List<SettingSnapshot> settings = CaptureSettings(module.SettingsFields);
+                if (settings.Count == 0)
+                {
+                    continue;
+                }
+
+                if (snapshots.Count > 0)
+                {
+                    BossManipulateSnapshot last = snapshots[snapshots.Count - 1];
+                    if (string.Equals(last.ArenaName, arenaName, StringComparison.Ordinal) &&
+                        string.Equals(last.ModuleName, module.ModuleName, StringComparison.Ordinal) &&
+                        last.UnixTime == timestamp)
+                    {
+                        continue;
+                    }
+                }
+
+                snapshots.Add(new BossManipulateSnapshot(
+                    arenaName,
+                    module.ModuleName,
+                    timestamp,
+                    settings.ToArray()));
+            }
+        }
+
+        private bool HasAnySnapshotForArena(string arenaName)
+        {
+            if (string.IsNullOrWhiteSpace(arenaName) || IsIgnoredArena(arenaName))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < snapshots.Count; i++)
+            {
+                if (string.Equals(snapshots[i].ArenaName, arenaName, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private bool TryGetTrackedModulesForScene(string arenaName, out List<TrackedModule> trackedModules)
         {
             trackedModules = null;
+            if (IsIgnoredArena(arenaName))
+            {
+                return false;
+            }
 
             EnsureSceneModules(forceRebuild: false);
             if (!sceneModules.TryGetValue(arenaName, out trackedModules) || trackedModules == null || trackedModules.Count == 0)
@@ -232,18 +267,16 @@ namespace ReplayLogger
                 return false;
             }
 
-            string explicitModuleName = null;
-            if (string.Equals(arenaName, "GG_Collector", StringComparison.Ordinal) ||
-                string.Equals(arenaName, "GG_Collector_V", StringComparison.Ordinal))
+            string[] fallbackNameTokens;
+            if (IsCollectorArena(arenaName))
             {
-                explicitModuleName = CollectorPhasesModuleName;
+                fallbackNameTokens = new[] { "Collector" };
             }
-            else if (string.Equals(arenaName, "GG_Grey_Prince_Zote", StringComparison.Ordinal))
+            else if (IsGreyPrinceZoteArena(arenaName))
             {
-                explicitModuleName = ZoteHelperModuleName;
+                fallbackNameTokens = new[] { "Zote", "GreyPrince" };
             }
-
-            if (string.IsNullOrWhiteSpace(explicitModuleName))
+            else
             {
                 return false;
             }
@@ -254,58 +287,49 @@ namespace ReplayLogger
                 return false;
             }
 
-            object foundModule = null;
-            if (modules.Contains(explicitModuleName))
+            List<TrackedModule> found = new();
+            foreach (DictionaryEntry entry in modules)
             {
-                foundModule = modules[explicitModuleName];
-            }
-            else
-            {
-                foreach (DictionaryEntry entry in modules)
+                object module = entry.Value;
+                if (module == null)
                 {
-                    object module = entry.Value;
-                    if (module == null)
-                    {
-                        continue;
-                    }
-
-                    Type moduleType = module.GetType();
-                    if (moduleType == null)
-                    {
-                        continue;
-                    }
-
-                    if (string.Equals(moduleType.Name, explicitModuleName, StringComparison.Ordinal))
-                    {
-                        foundModule = module;
-                        break;
-                    }
+                    continue;
                 }
+
+                Type foundType = module.GetType();
+                if (foundType == null || !IsBossManipulateModule(foundType))
+                {
+                    continue;
+                }
+
+                string moduleName = foundType.Name ?? string.Empty;
+                if (!ContainsAnyToken(moduleName, fallbackNameTokens))
+                {
+                    continue;
+                }
+
+                FieldInfo[] settings = ResolveSettingFields(foundType);
+                if (settings.Length == 0)
+                {
+                    continue;
+                }
+
+                found.Add(new TrackedModule(moduleName, module, settings));
             }
 
-            if (foundModule == null)
+            if (found.Count == 0)
             {
                 return false;
             }
 
-            Type foundType = foundModule.GetType();
-            if (!IsBossManipulateModule(foundType))
-            {
-                return false;
-            }
-
-            FieldInfo[] settings = ResolveSettingFields(foundType);
-            if (settings.Length == 0)
-            {
-                return false;
-            }
-
-            trackedModules = new List<TrackedModule>(1)
-            {
-                new TrackedModule(explicitModuleName, foundModule, settings)
-            };
+            trackedModules = found;
 
             return true;
+        }
+
+        private static bool IsIgnoredArena(string arenaName)
+        {
+            return string.Equals(arenaName, WorkshopSceneName, StringComparison.Ordinal);
         }
 
         private static List<SettingSnapshot> CaptureSettings(FieldInfo[] fields)
@@ -390,12 +414,6 @@ namespace ReplayLogger
                     continue;
                 }
 
-                if (!field.Name.EndsWith("Scene", StringComparison.Ordinal) &&
-                    !field.Name.EndsWith("SceneName", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
                 string sceneName = null;
                 try
                 {
@@ -439,9 +457,18 @@ namespace ReplayLogger
                 return result;
             }
 
-            if (!FallbackScenesByModuleName.TryGetValue(moduleName, out string[] fallbackScenes) ||
-                fallbackScenes == null ||
-                fallbackScenes.Length == 0)
+            string[] fallbackScenes = null;
+            if (moduleName.IndexOf("Collector", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                fallbackScenes = CollectorScenes;
+            }
+            else if (moduleName.IndexOf("Zote", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     moduleName.IndexOf("GreyPrince", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                fallbackScenes = GreyPrinceZoteScenes;
+            }
+
+            if (fallbackScenes == null || fallbackScenes.Length == 0)
             {
                 return result;
             }
@@ -515,29 +542,45 @@ namespace ReplayLogger
                 return false;
             }
 
-            string moduleName = moduleType.Name ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(moduleName))
-            {
-                return false;
-            }
-
-            bool nameMatch = moduleName.EndsWith("Helper", StringComparison.Ordinal) ||
-                             string.Equals(moduleName, VengeflyKingModuleName, StringComparison.Ordinal) ||
-                             ExplicitBossManipulateModuleNames.Contains(moduleName);
-            if (!nameMatch)
-            {
-                return false;
-            }
-
             string ns = moduleType.Namespace ?? string.Empty;
             if (ns.StartsWith(BossManipulateNamespace, StringComparison.Ordinal))
             {
                 return true;
             }
 
-            if (string.Equals(moduleName, CollectorPhasesModuleName, StringComparison.Ordinal))
+            return ns.StartsWith(CollectorPhasesNamespace, StringComparison.Ordinal);
+        }
+
+        private static bool IsCollectorArena(string arenaName)
+        {
+            return string.Equals(arenaName, "GG_Collector", StringComparison.Ordinal) ||
+                   string.Equals(arenaName, "GG_Collector_V", StringComparison.Ordinal);
+        }
+
+        private static bool IsGreyPrinceZoteArena(string arenaName)
+        {
+            return string.Equals(arenaName, "GG_Grey_Prince_Zote", StringComparison.Ordinal);
+        }
+
+        private static bool ContainsAnyToken(string text, string[] tokens)
+        {
+            if (string.IsNullOrWhiteSpace(text) || tokens == null || tokens.Length == 0)
             {
-                return ns.StartsWith(CollectorPhasesNamespace, StringComparison.Ordinal);
+                return false;
+            }
+
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string token = tokens[i];
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    continue;
+                }
+
+                if (text.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
             }
 
             return false;

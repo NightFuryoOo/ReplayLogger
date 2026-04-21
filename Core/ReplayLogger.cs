@@ -867,9 +867,21 @@ namespace ReplayLogger
 
         public void ClearWarnings() => warnings.Clear();
 
-        public void LogInitial(StreamWriter writer, long lastUnixTime)
+        public void LogInitial(StreamWriter writer, string arenaName, long lastUnixTime)
         {
-            // Intentionally left blank: we only keep SpeedWarn entries.
+            if (writer == null)
+            {
+                return;
+            }
+
+            float currentScale = Mathf.Max(Time.timeScale, 0f);
+            CoreSessionLogger.AddSpeedWarning(
+                warnings,
+                arenaName,
+                deltaMs: 0,
+                defaultScale: defaultTimeScale,
+                currentScale: currentScale,
+                durationSeconds: 0d);
         }
 
         public void Update(StreamWriter writer, string arenaName, long lastUnixTime)
@@ -1135,6 +1147,52 @@ namespace ReplayLogger
 
     public sealed class DamageChangeTracker
     {
+        private static readonly Dictionary<string, string> OwnerDisplayNameOverrides = new(StringComparer.Ordinal)
+        {
+            ["Knight/Attacks/Slash"] = "Обычная атака гвоздём",
+            ["Knight/Attacks/AltSlash"] = "Обычная атака гвоздём №2",
+            ["Knight/Attacks/UpSlash"] = "Атака гвоздём вверх",
+            ["Knight/Attacks/DownSlash"] = "Атака гвоздём вниз",
+            ["Knight/Attacks/WallSlash"] = "Атака гвоздём со стены",
+            ["Knight/Attacks/Dash Slash"] = "Рассекающий удар",
+            ["Knight/Attacks/Great Slash"] = "Великий удар",
+            ["Knight/Attacks/Cyclone Slash/Hits/Hit L"] = "Ураганный удар левый",
+            ["Knight/Attacks/Cyclone Slash/Hits/Hit R"] = "Ураганный удар правый",
+            ["Knight/Attacks/Sharp Shadow"] = "Knight/Attacks/Пронизывающая тень",
+            ["Knight/Spells/Flukenest"] = "Тремогнездо",
+            ["Knight/Spells/Q Fall Damage"] = "Рывок в пике",
+            ["Knight/Spells/Q Slam 2/Hit L"] = "Нисходящая тьма левая часть",
+            ["Knight/Spells/Q Slam/Hit L"] = "Опустошающее пике левая часть",
+            ["Knight/Spells/Q Slam 2/Hit R"] = "Нисходящая тьма правая часть",
+            ["Knight/Spells/Q Slam/Hit R"] = "Опустошающее пике правая часть",
+            ["Knight/Spells/Q Mega/Hit R"] = "Нисходящая тьма пламя правая часть",
+            ["Knight/Spells/Q Mega/Hit L"] = "Нисходящая тьма пламя левая часть",
+            ["Knight/Spells/Scr Heads 2/Hit U"] = "Вопль бездны центр",
+            ["Knight/Spells/Scr Heads/Hit U"] = "Воющие духи центр",
+            ["Knight/Spells/Scr Heads 2/Hit L"] = "Вопль бездны левая часть",
+            ["Knight/Spells/Scr Heads/Hit L"] = "Воющие духи левая часть",
+            ["Knight/Spells/Scr Heads 2/Hit R"] = "Вопль бездны правая часть",
+            ["Knight/Spells/Scr Heads/Hit R"] = "Воющие духи правая часть",
+            ["Knight/SuperDash Damage"] = "Кристальный рывок [Полёт]",
+            ["Knight/Charm Effects/Defender's Crest"] = "Knight/Charm Effects/Герб Защитника",
+            ["Knight/Charm Effects/Thorn Hit/Hit L"] = "Knight/Charm Effects/Колючки страданий удар влево",
+            ["Knight/Charm Effects/Thorn Hit/Hit R"] = "Knight/Charm Effects/Колючки страданий удар вправо",
+            ["Knight/Charm Effects/Thorn Hit/Hit D"] = "Knight/Charm Effects/Колючки страданий удар вниз",
+            ["Knight/Charm Effects/Thorn Hit/Hit U"] = "Knight/Charm Effects/Колючки страданий удар вверх"
+        };
+
+        private static readonly Dictionary<string, string> OwnerLeafDisplayNameOverrides = new(StringComparer.Ordinal)
+        {
+            ["Fireball2 Spiral(Clone)"] = "Теневая душа",
+            ["Fireball Spiral(Clone)"] = "Мстительный дух",
+            ["SD Burst"] = "Кристальный рывок [Старт]",
+            ["Gas Explosion Uumuu(Clone)"] = "Взрыв медузы",
+            ["Falling Barrel(Clone)"] = "Падающие камни",
+            ["Grubberfly BeamL(Clone)"] = "Элегия куколки удар вниз",
+            ["Grubberfly BeamR(Clone)"] = "Элегия куколки обычный удар",
+            ["Grubberfly BeamU(Clone)"] = "Элегия куколки удар вверх"
+        };
+
         private readonly Dictionary<string, OwnerDamageState> ownerStatesByKey = new(StringComparer.Ordinal);
         private readonly List<string> changes = new();
         private readonly List<DamageChangeEntry> entries = new();
@@ -1174,10 +1232,36 @@ namespace ReplayLogger
             bool newDamage = ownerState.UniqueDamages.Add(finalDamage);
             if (newDamage)
             {
-                string line = $"Add NEW unique damage: {ownerName}-{normalizedSceneName}/{deltaMs} #{finalDamage}";
+                string displayOwnerName = ResolveOwnerDisplayName(ownerName);
+                string line = $"Add NEW unique damage: {displayOwnerName}-{normalizedSceneName}/{deltaMs} #{finalDamage}";
                 changes.Add(line);
                 entries.Add(new DamageChangeEntry(ownerName, line));
             }
+        }
+
+        private static string ResolveOwnerDisplayName(string ownerName)
+        {
+            if (string.IsNullOrEmpty(ownerName))
+            {
+                return ownerName ?? string.Empty;
+            }
+
+            if (OwnerDisplayNameOverrides.TryGetValue(ownerName, out string displayOwnerName))
+            {
+                return displayOwnerName;
+            }
+
+            int lastSlash = ownerName.LastIndexOf('/');
+            string leafName = lastSlash >= 0 && lastSlash + 1 < ownerName.Length
+                ? ownerName.Substring(lastSlash + 1)
+                : ownerName;
+
+            if (OwnerLeafDisplayNameOverrides.TryGetValue(leafName, out string leafDisplayOwnerName))
+            {
+                return leafDisplayOwnerName;
+            }
+
+            return ownerName;
         }
 
         private static int CalculateFinalDamage(int damageDealt, float multiplier)
@@ -1535,6 +1619,639 @@ namespace ReplayLogger
             long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
             string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
             damageChangeTracker.Track(FlukenestDamageOwnerName, scene, unixTime - lastUnixTime, damage, 1f);
+        }
+    }
+
+    public static class CharmDamageTracker
+    {
+        private const string DefendersCrestOwnerName = "Knight/Charm Effects/Defender's Crest";
+        private const string SharpShadowOwnerName = "Knight/Attacks/Sharp Shadow";
+
+        private static readonly FieldInfo damageEnemiesDamageField =
+            typeof(DamageEnemies).GetField("damageDealt", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+        public static void ResetHints()
+        {
+        }
+
+        public static void TrackFromHitInstance(
+            bool isLogging,
+            StreamWriter writer,
+            DamageChangeTracker damageChangeTracker,
+            string arenaName,
+            long lastUnixTime,
+            long nowUnixTime,
+            HitInstance hitInstance,
+            GameObject targetObject = null)
+        {
+            TrackFromHitWithActualDamage(
+                isLogging,
+                writer,
+                damageChangeTracker,
+                arenaName,
+                lastUnixTime,
+                nowUnixTime,
+                hitInstance,
+                actualDamage: 0,
+                targetObject);
+        }
+
+        public static void TrackFromHitWithActualDamage(
+            bool isLogging,
+            StreamWriter writer,
+            DamageChangeTracker damageChangeTracker,
+            string arenaName,
+            long lastUnixTime,
+            long nowUnixTime,
+            HitInstance hitInstance,
+            int actualDamage,
+            GameObject targetObject = null)
+        {
+            if (!isLogging || writer == null || damageChangeTracker == null)
+            {
+                return;
+            }
+
+            int resolvedDamage = actualDamage > 0 ? actualDamage : Math.Max(0, hitInstance.DamageDealt);
+            if (resolvedDamage <= 0)
+            {
+                return;
+            }
+
+            long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            string[] owners = ResolveOwnerCandidates(hitInstance);
+            if (owners == null || owners.Length == 0)
+            {
+                return;
+            }
+
+            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            for (int i = 0; i < owners.Length; i++)
+            {
+                string ownerPath = owners[i];
+                if (string.IsNullOrEmpty(ownerPath))
+                {
+                    continue;
+                }
+
+                float multiplier = actualDamage > 0 ? 1f : hitInstance.Multiplier;
+                damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, resolvedDamage, multiplier);
+            }
+        }
+
+        public static void HandleDoDamage(
+            bool isLogging,
+            StreamWriter writer,
+            DamageChangeTracker damageChangeTracker,
+            string arenaName,
+            long lastUnixTime,
+            long nowUnixTime,
+            On.DamageEnemies.orig_DoDamage orig,
+            DamageEnemies self,
+            GameObject target)
+        {
+            string ownerPath = null;
+            bool canTrack =
+                isLogging &&
+                writer != null &&
+                damageChangeTracker != null &&
+                self != null &&
+                self.gameObject != null &&
+                TryResolveTrackedCharmOwnerPath(self.gameObject, out ownerPath);
+
+            HealthManager targetManager = canTrack ? ResolveTargetHealthManager(target) : null;
+            int hpBefore = targetManager != null ? Math.Max(0, targetManager.hp) : -1;
+
+            orig(self, target);
+
+            try
+            {
+                if (!canTrack)
+                {
+                    return;
+                }
+
+                int damage = 0;
+                if (targetManager != null)
+                {
+                    int hpAfter = Math.Max(0, targetManager.hp);
+                    damage = Math.Max(0, hpBefore - hpAfter);
+                }
+
+                if (damage <= 0)
+                {
+                    damage = ReadDamageDealt(self);
+                }
+
+                if (damage <= 0)
+                {
+                    return;
+                }
+
+                long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+                damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, damage, 1f);
+            }
+            catch (Exception e)
+            {
+                InternalDiagnostics.Warn($"ReplayLogger: failed to track charm damage in DamageChange: {e.Message}");
+            }
+        }
+
+        public static void HandleHitTakerHit(
+            bool isLogging,
+            StreamWriter writer,
+            DamageChangeTracker damageChangeTracker,
+            string arenaName,
+            long lastUnixTime,
+            long nowUnixTime,
+            On.HitTaker.orig_Hit orig,
+            GameObject targetGameObject,
+            HitInstance hitInstance,
+            int recursionDepth)
+        {
+            HealthManager targetManager =
+                isLogging && writer != null && damageChangeTracker != null
+                    ? ResolveTargetHealthManager(targetGameObject)
+                    : null;
+            int hpBefore = targetManager != null ? Math.Max(0, targetManager.hp) : -1;
+
+            orig(targetGameObject, hitInstance, recursionDepth);
+
+            if (!isLogging || writer == null || damageChangeTracker == null)
+            {
+                return;
+            }
+
+            long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+
+            int actualDamage = 0;
+            if (targetManager != null)
+            {
+                int hpAfter = Math.Max(0, targetManager.hp);
+                actualDamage = Math.Max(0, hpBefore - hpAfter);
+            }
+
+            if (actualDamage <= 0)
+            {
+                actualDamage = Math.Max(0, hitInstance.DamageDealt);
+            }
+
+            if (actualDamage <= 0)
+            {
+                return;
+            }
+
+            TrackFromHitWithActualDamage(
+                isLogging,
+                writer,
+                damageChangeTracker,
+                arenaName,
+                lastUnixTime,
+                nowUnixTime,
+                hitInstance,
+                actualDamage,
+                targetGameObject);
+        }
+
+        public static void HandleExtraDamage(
+            bool isLogging,
+            StreamWriter writer,
+            DamageChangeTracker damageChangeTracker,
+            string arenaName,
+            long lastUnixTime,
+            long nowUnixTime,
+            On.ExtraDamageable.orig_RecieveExtraDamage orig,
+            ExtraDamageable self,
+            ExtraDamageTypes extraDamageType)
+        {
+            HealthManager targetManager =
+                isLogging && writer != null && damageChangeTracker != null && self != null
+                    ? self.GetComponent<HealthManager>()
+                    : null;
+            int hpBefore = targetManager != null ? Math.Max(0, targetManager.hp) : -1;
+
+            orig(self, extraDamageType);
+
+            if (!isLogging || writer == null || damageChangeTracker == null || self == null)
+            {
+                return;
+            }
+
+            int damage = 0;
+            if (targetManager != null)
+            {
+                int hpAfter = Math.Max(0, targetManager.hp);
+                damage = Math.Max(0, hpBefore - hpAfter);
+            }
+
+            if (damage <= 0)
+            {
+                damage = Math.Max(0, ExtraDamageable.GetDamageOfType(extraDamageType));
+            }
+
+            if (damage <= 0)
+            {
+                return;
+            }
+
+            string ownerPath = extraDamageType switch
+            {
+                ExtraDamageTypes.Dung => DefendersCrestOwnerName,
+                ExtraDamageTypes.Dung2 => DefendersCrestOwnerName,
+                ExtraDamageTypes.Spore when IsCharmEquipped((int)Charm.DefendersCrest) => DefendersCrestOwnerName,
+                _ => null
+            };
+
+            if (string.IsNullOrEmpty(ownerPath))
+            {
+                return;
+            }
+
+            long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, damage, 1f);
+        }
+
+        private static string[] ResolveOwnerCandidates(HitInstance hitInstance)
+        {
+            List<string> owners = new(4);
+            GameObject sourceObject = hitInstance.Source;
+            if (sourceObject != null && TryResolveTrackedCharmOwnerPath(sourceObject, out string ownerPathFromSource))
+            {
+                owners.Add(ownerPathFromSource);
+                return owners.ToArray();
+            }
+
+            if (hitInstance.AttackType == AttackTypes.SharpShadow)
+            {
+                owners.Add(SharpShadowOwnerName);
+                return owners.ToArray();
+            }
+
+            if (hitInstance.AttackType == AttackTypes.Acid || hitInstance.SpecialType == SpecialTypes.Acid)
+            {
+                owners.Add(DefendersCrestOwnerName);
+                return owners.ToArray();
+            }
+
+            return owners.Count == 0 ? Array.Empty<string>() : owners.ToArray();
+        }
+
+        private static int ReadDamageDealt(DamageEnemies self)
+        {
+            if (self == null || damageEnemiesDamageField == null)
+            {
+                return 0;
+            }
+
+            try
+            {
+                object raw = damageEnemiesDamageField.GetCachedValue(self);
+                return raw is int intDamage ? Math.Max(0, intDamage) : 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static HealthManager ResolveTargetHealthManager(GameObject target)
+        {
+            if (target == null)
+            {
+                return null;
+            }
+
+            HealthManager direct = target.GetComponent<HealthManager>();
+            if (direct != null)
+            {
+                return direct;
+            }
+
+            return target.GetComponentInParent<HealthManager>();
+        }
+
+
+        private static bool TryMapSourcePathToCharmOwner(string sourcePath, out string ownerPath)
+        {
+            ownerPath = null;
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                return false;
+            }
+
+            if (sourcePath.IndexOf("sharp shadow", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                ownerPath = SharpShadowOwnerName;
+                return true;
+            }
+
+            bool isDefendersCrest =
+                (sourcePath.IndexOf("defender", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 sourcePath.IndexOf("crest", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                sourcePath.IndexOf("crest", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("dung", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("spore", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                (sourcePath.IndexOf("charm", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 sourcePath.IndexOf("gas", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (isDefendersCrest)
+            {
+                ownerPath = DefendersCrestOwnerName;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveTrackedCharmOwnerPath(GameObject sourceObject, out string ownerPath)
+        {
+            ownerPath = null;
+            if (sourceObject == null)
+            {
+                return false;
+            }
+
+            string sourcePath = sourceObject.GetFullPath();
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                sourcePath = sourceObject.name ?? string.Empty;
+            }
+
+            if (IsDisabledCharmSource(sourceObject, sourcePath))
+            {
+                return false;
+            }
+
+            if (TryMapSourcePathToCharmOwner(sourcePath, out ownerPath))
+            {
+                return true;
+            }
+
+            bool hasDefendersCrest =
+                HasComponentTypeTokenInParents(sourceObject, "dung") ||
+                HasComponentTypeTokenInParents(sourceObject, "crest") ||
+                HasComponentTypeTokenInParents(sourceObject, "spore") ||
+                HasComponentTypeTokenInParents(sourceObject, "gas");
+            if (hasDefendersCrest)
+            {
+                ownerPath = DefendersCrestOwnerName;
+                return true;
+            }
+
+            if (HasDamageEnemiesInParents(sourceObject) &&
+                !IsKnownCoreKnightDamagePath(sourcePath))
+            {
+                ownerPath = sourcePath;
+                return true;
+            }
+
+            if (IsKnownCoreKnightDamagePath(sourcePath))
+            {
+                return false;
+            }
+
+            if (HasEnemyHealthManagerInHierarchy(sourceObject))
+            {
+                return false;
+            }
+
+            if (!HasCharmLikeMarker(sourceObject, sourcePath))
+            {
+                return false;
+            }
+
+            ownerPath = sourcePath;
+            return true;
+        }
+
+        private static bool IsDisabledCharmSource(GameObject sourceObject, string sourcePath)
+        {
+            bool fromPath =
+                sourcePath.IndexOf("womb", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("hatchling", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("dreamshield", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("orbitshield", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("orbit shield", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("weaver", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("weaverling", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                sourcePath.IndexOf("scuttler", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (fromPath)
+            {
+                return true;
+            }
+
+            if (sourceObject == null)
+            {
+                return false;
+            }
+
+            return HasComponentInParentsByName(sourceObject, "KnightHatchling") ||
+                   HasComponentInParentsByName(sourceObject, "WeaverlingEnemyList") ||
+                   HasComponentTypeTokenInParents(sourceObject, "hatch") ||
+                   HasComponentTypeTokenInParents(sourceObject, "weaver") ||
+                   HasComponentTypeTokenInParents(sourceObject, "scuttler") ||
+                   HasComponentTypeTokenInParents(sourceObject, "orbitshield") ||
+                   (HasComponentTypeTokenInParents(sourceObject, "dream") &&
+                    HasComponentTypeTokenInParents(sourceObject, "shield"));
+        }
+
+        private static bool IsKnownCoreKnightDamagePath(string sourcePath)
+        {
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                return false;
+            }
+
+            if (sourcePath.IndexOf("sharp shadow", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
+            return sourcePath.IndexOf("/Attacks/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   sourcePath.IndexOf("/Spells/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   sourcePath.IndexOf("Fireball", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   sourcePath.IndexOf("SuperDash", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   sourcePath.IndexOf("SD Burst", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool HasEnemyHealthManagerInHierarchy(GameObject sourceObject)
+        {
+            if (sourceObject == null)
+            {
+                return false;
+            }
+
+            HealthManager manager = sourceObject.GetComponentInParent<HealthManager>();
+            if (manager == null || manager.gameObject == null)
+            {
+                return false;
+            }
+
+            HeroController hero = HeroController.instance;
+            GameObject heroObject = hero?.gameObject;
+            if (heroObject == null)
+            {
+                return true;
+            }
+
+            Transform managerRoot = manager.gameObject.transform?.root;
+            Transform heroRoot = heroObject.transform?.root;
+            return managerRoot != null && heroRoot != null && !ReferenceEquals(managerRoot, heroRoot);
+        }
+
+        private static bool HasDamageEnemiesInParents(GameObject sourceObject)
+        {
+            if (sourceObject == null)
+            {
+                return false;
+            }
+
+            Transform current = sourceObject.transform;
+            int depth = 0;
+            while (current != null && depth < 12)
+            {
+                if (current.GetComponent<DamageEnemies>() != null)
+                {
+                    return true;
+                }
+
+                current = current.parent;
+                depth++;
+            }
+
+            return false;
+        }
+
+        private static bool HasComponentInParentsByName(GameObject sourceObject, string componentTypeName)
+        {
+            if (sourceObject == null || string.IsNullOrEmpty(componentTypeName))
+            {
+                return false;
+            }
+
+            Transform current = sourceObject.transform;
+            int depth = 0;
+            while (current != null && depth < 12)
+            {
+                if (current.GetComponent(componentTypeName) != null)
+                {
+                    return true;
+                }
+
+                current = current.parent;
+                depth++;
+            }
+
+            return false;
+        }
+
+        private static bool HasComponentTypeTokenInParents(GameObject sourceObject, string token)
+        {
+            if (sourceObject == null || string.IsNullOrEmpty(token))
+            {
+                return false;
+            }
+
+            Transform current = sourceObject.transform;
+            int depth = 0;
+            while (current != null && depth < 12)
+            {
+                Component[] components = current.GetComponents<Component>();
+                if (components != null)
+                {
+                    for (int i = 0; i < components.Length; i++)
+                    {
+                        Component component = components[i];
+                        if (component == null)
+                        {
+                            continue;
+                        }
+
+                        string typeName = component.GetType().Name;
+                        if (!string.IsNullOrEmpty(typeName) &&
+                            typeName.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                current = current.parent;
+                depth++;
+            }
+
+            return false;
+        }
+
+        private static bool HasCharmLikeMarker(GameObject sourceObject, string sourcePath)
+        {
+            if (!string.IsNullOrEmpty(sourcePath))
+            {
+                if (ContainsAnyCharmToken(sourcePath))
+                {
+                    return true;
+                }
+            }
+
+            if (sourceObject == null)
+            {
+                return false;
+            }
+
+            Transform current = sourceObject.transform;
+            int depth = 0;
+            while (current != null && depth < 12)
+            {
+                if (ContainsAnyCharmToken(current.name))
+                {
+                    return true;
+                }
+
+                Component[] components = current.GetComponents<Component>();
+                if (components != null)
+                {
+                    for (int i = 0; i < components.Length; i++)
+                    {
+                        Component component = components[i];
+                        if (component == null)
+                        {
+                            continue;
+                        }
+
+                        string typeName = component.GetType().Name;
+                        if (ContainsAnyCharmToken(typeName))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                current = current.parent;
+                depth++;
+            }
+
+            return false;
+        }
+
+        private static bool ContainsAnyCharmToken(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return false;
+            }
+
+            return value.IndexOf("charm", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf("dung", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf("crest", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf("gas", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf("spore", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsCharmEquipped(int charmId)
+        {
+            PlayerData data = PlayerData.instance;
+            return data?.equippedCharms != null && data.equippedCharms.Contains(charmId);
         }
     }
 }
