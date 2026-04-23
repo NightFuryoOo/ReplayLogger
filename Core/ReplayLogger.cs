@@ -1629,9 +1629,36 @@ namespace ReplayLogger
 
         private static readonly FieldInfo damageEnemiesDamageField =
             typeof(DamageEnemies).GetField("damageDealt", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        private static readonly Dictionary<GameObject, CachedOwnerPathResult> trackedCharmOwnerPathCache = new(512);
+        private static readonly List<GameObject> trackedCharmOwnerPathCacheCleanupBuffer = new(128);
+        private const int TrackedCharmOwnerPathCacheHardLimit = 4096;
+        private const int TrackedCharmOwnerPathCacheCleanupMinSize = 256;
+        private const int TrackedCharmOwnerPathCacheCleanupBatchSize = 128;
+        private const float TrackedCharmOwnerPathCacheCleanupTickSeconds = 0.5f;
+        private const float NegativeTrackedCharmOwnerPathCacheMaxAgeSeconds = 1f;
+        private static float lastTrackedCharmOwnerPathCacheCleanupTime;
+        private static int trackedCharmOwnerPathCacheCleanupCursor;
+
+        private readonly struct CachedOwnerPathResult
+        {
+            internal CachedOwnerPathResult(bool hasOwnerPath, string ownerPath, float cachedAtUnscaledTime)
+            {
+                HasOwnerPath = hasOwnerPath;
+                OwnerPath = ownerPath;
+                CachedAtUnscaledTime = cachedAtUnscaledTime;
+            }
+
+            internal bool HasOwnerPath { get; }
+            internal string OwnerPath { get; }
+            internal float CachedAtUnscaledTime { get; }
+        }
 
         public static void ResetHints()
         {
+            trackedCharmOwnerPathCache.Clear();
+            trackedCharmOwnerPathCacheCleanupBuffer.Clear();
+            trackedCharmOwnerPathCacheCleanupCursor = 0;
+            lastTrackedCharmOwnerPathCacheCleanupTime = 0f;
         }
 
         public static void TrackFromHitInstance(
@@ -1972,6 +1999,36 @@ namespace ReplayLogger
                 return false;
             }
 
+            float now = Time.unscaledTime;
+            CleanupTrackedCharmOwnerPathCacheIfNeeded(now);
+
+            if (trackedCharmOwnerPathCache.TryGetValue(sourceObject, out CachedOwnerPathResult cached))
+            {
+                if (cached.HasOwnerPath)
+                {
+                    ownerPath = cached.OwnerPath;
+                    return true;
+                }
+
+                if (now - cached.CachedAtUnscaledTime <= NegativeTrackedCharmOwnerPathCacheMaxAgeSeconds)
+                {
+                    return false;
+                }
+            }
+
+            bool resolved = TryResolveTrackedCharmOwnerPathUncached(sourceObject, out ownerPath);
+            CacheTrackedCharmOwnerPath(sourceObject, resolved, ownerPath, now);
+            return resolved;
+        }
+
+        private static bool TryResolveTrackedCharmOwnerPathUncached(GameObject sourceObject, out string ownerPath)
+        {
+            ownerPath = null;
+            if (sourceObject == null)
+            {
+                return false;
+            }
+
             string sourcePath = sourceObject.GetFullPath();
             if (string.IsNullOrEmpty(sourcePath))
             {
@@ -2023,6 +2080,85 @@ namespace ReplayLogger
 
             ownerPath = sourcePath;
             return true;
+        }
+
+        private static void CacheTrackedCharmOwnerPath(GameObject sourceObject, bool hasOwnerPath, string ownerPath, float now)
+        {
+            if (sourceObject == null)
+            {
+                return;
+            }
+
+            if (trackedCharmOwnerPathCache.Count >= TrackedCharmOwnerPathCacheHardLimit)
+            {
+                CleanupTrackedCharmOwnerPathCacheIfNeeded(now, force: true);
+                if (trackedCharmOwnerPathCache.Count >= TrackedCharmOwnerPathCacheHardLimit)
+                {
+                    trackedCharmOwnerPathCache.Clear();
+                    trackedCharmOwnerPathCacheCleanupBuffer.Clear();
+                    trackedCharmOwnerPathCacheCleanupCursor = 0;
+                }
+            }
+
+            trackedCharmOwnerPathCache[sourceObject] =
+                new CachedOwnerPathResult(hasOwnerPath, hasOwnerPath ? ownerPath : null, now);
+        }
+
+        private static void CleanupTrackedCharmOwnerPathCacheIfNeeded(float now, bool force = false)
+        {
+            if (trackedCharmOwnerPathCache.Count < TrackedCharmOwnerPathCacheCleanupMinSize)
+            {
+                trackedCharmOwnerPathCacheCleanupCursor = 0;
+                return;
+            }
+
+            if (!force && now - lastTrackedCharmOwnerPathCacheCleanupTime < TrackedCharmOwnerPathCacheCleanupTickSeconds)
+            {
+                return;
+            }
+
+            lastTrackedCharmOwnerPathCacheCleanupTime = now;
+            trackedCharmOwnerPathCacheCleanupBuffer.Clear();
+
+            int startIndex = trackedCharmOwnerPathCacheCleanupCursor;
+            int endIndexExclusive = startIndex + TrackedCharmOwnerPathCacheCleanupBatchSize;
+            int index = 0;
+
+            foreach (var pair in trackedCharmOwnerPathCache)
+            {
+                if (index < startIndex)
+                {
+                    index++;
+                    continue;
+                }
+
+                if (index >= endIndexExclusive)
+                {
+                    break;
+                }
+
+                if (pair.Key == null)
+                {
+                    trackedCharmOwnerPathCacheCleanupBuffer.Add(pair.Key);
+                }
+
+                index++;
+            }
+
+            for (int i = 0; i < trackedCharmOwnerPathCacheCleanupBuffer.Count; i++)
+            {
+                trackedCharmOwnerPathCache.Remove(trackedCharmOwnerPathCacheCleanupBuffer[i]);
+            }
+
+            if (index < endIndexExclusive)
+            {
+                trackedCharmOwnerPathCacheCleanupCursor = 0;
+                return;
+            }
+
+            int remainingCount = trackedCharmOwnerPathCache.Count;
+            trackedCharmOwnerPathCacheCleanupCursor =
+                endIndexExclusive >= remainingCount ? 0 : endIndexExclusive;
         }
 
         private static bool IsDisabledCharmSource(GameObject sourceObject, string sourcePath)
