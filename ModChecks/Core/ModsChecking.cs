@@ -137,7 +137,7 @@ namespace ReplayLogger
 
                     if (!TryResolveDirectoryMetadata(modDirectory, out ModAssemblyMetadata metadata))
                     {
-                        unregisteredMods.Add(modDirectory);
+                        AddUnregisteredModEntries(unregisteredMods, modDirectory);
                         continue;
                     }
 
@@ -147,7 +147,7 @@ namespace ReplayLogger
                 catch (Exception ex)
                 {
                     global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: error processing directory '{modDirectory}': {ex.Message}");
-                    unregisteredMods.Add(modDirectory);
+                    AddUnregisteredModEntries(unregisteredMods, modDirectory);
                 }
             }
 
@@ -158,6 +158,37 @@ namespace ReplayLogger
 
             List<string> report = [.. modInfo, "Unregistered mods:", .. unregisteredMods];
             return report;
+        }
+
+        private static void AddUnregisteredModEntries(List<string> output, string modDirectory)
+        {
+            if (output == null || string.IsNullOrEmpty(modDirectory))
+            {
+                return;
+            }
+
+            try
+            {
+                string[] dllFiles = Directory.GetFiles(modDirectory, "*.dll", SearchOption.TopDirectoryOnly)
+                    .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (dllFiles.Length == 0)
+                {
+                    output.Add(modDirectory);
+                    return;
+                }
+
+                foreach (string dllPath in dllFiles)
+                {
+                    string hash = CalculateSHA256Cached(dllPath, null) ?? string.Empty;
+                    output.Add($"{modDirectory}|{Path.GetFileName(dllPath)}|{hash}");
+                }
+            }
+            catch
+            {
+                output.Add(modDirectory);
+            }
         }
 
         private static bool TryResolveDirectoryMetadata(string modDirectory, out ModAssemblyMetadata metadata)
@@ -430,11 +461,14 @@ namespace ReplayLogger
                 foreach (string modDirectory in modDirectories)
                 {
                     string modFolder = Path.GetFileName(modDirectory);
-                    if (TryGetPrimaryModDll(modDirectory, out string dllPath))
+                    if (TryGetOrderedDllCandidates(modDirectory, out List<string> dllCandidates))
                     {
-                        FileInfo info = new(dllPath);
-                        string miniHash = ComputeMiniHash(dllPath);
-                        entries.Add($"{modFolder}|{Path.GetFileName(dllPath)}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{miniHash}");
+                        foreach (string dllPath in dllCandidates)
+                        {
+                            FileInfo info = new(dllPath);
+                            string miniHash = ComputeMiniHash(dllPath);
+                            entries.Add($"{modFolder}|{Path.GetFileName(dllPath)}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{miniHash}");
+                        }
                     }
                     else
                     {
