@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using Modding;
@@ -72,6 +73,14 @@ namespace ReplayLogger
             public string Hash;
         }
 
+        private sealed class RuntimeModInfo
+        {
+            public string Name;
+            public string Version;
+            public string Hash;
+            public string AssemblyPath;
+        }
+
         public static void ClearHeavyModCache()
         {
             cachedPaleCourtInfo = null;
@@ -97,6 +106,11 @@ namespace ReplayLogger
 
             lock (ModScanLock)
             {
+                if (TryScanRuntimeMods(modsDir, out List<string> runtimeSnapshot))
+                {
+                    return runtimeSnapshot;
+                }
+
                 EnsurePaleCourtCache(modsDir);
                 string fingerprint = BuildModsFingerprint(modsDir);
                 if (!string.IsNullOrEmpty(fingerprint)
@@ -197,6 +211,268 @@ namespace ReplayLogger
             {
                 global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: cannot record fallback assemblies from '{modDirectory}': {ex.Message}");
             }
+        }
+
+        private static bool TryScanRuntimeMods(string modsDir, out List<string> snapshot)
+        {
+            snapshot = null;
+
+            try
+            {
+                IEnumerable<IMod> loadedMods = ModHooks.GetAllMods(onlyEnabled: true, allowLoadError: false);
+                if (loadedMods == null)
+                {
+                    return false;
+                }
+
+                List<RuntimeModInfo> runtimeMods = new();
+                HashSet<string> representedAssemblyPaths = new(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, Assembly> loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
+                    .Where(assembly => assembly != null && !string.IsNullOrWhiteSpace(assembly.FullName))
+                    .GroupBy(assembly => assembly.FullName, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+                Queue<Assembly> dependencyQueue = new();
+                HashSet<string> queuedAssemblies = new(StringComparer.Ordinal);
+
+                int activeModCount = 0;
+                foreach (IMod mod in loadedMods)
+                {
+                    if (mod == null)
+                    {
+                        continue;
+                    }
+
+                    activeModCount++;
+                    Assembly assembly = mod.GetType().Assembly;
+                    string assemblyPath = TryGetAssemblyPath(assembly);
+                    string name = TryGetRuntimeModName(mod);
+                    string version = TryGetRuntimeModVersion(mod, assemblyPath);
+                    string hash = CalculateSHA256Cached(assemblyPath, null) ?? string.Empty;
+
+                    runtimeMods.Add(new RuntimeModInfo
+                    {
+                        Name = NormalizeModField(name),
+                        Version = NormalizeModField(version),
+                        Hash = hash,
+                        AssemblyPath = assemblyPath ?? string.Empty
+                    });
+
+                    if (!string.IsNullOrWhiteSpace(assemblyPath))
+                    {
+                        representedAssemblyPaths.Add(assemblyPath);
+                    }
+
+                    EnqueueAssembly(assembly, dependencyQueue, queuedAssemblies);
+                }
+
+                if (activeModCount == 0)
+                {
+                    return false;
+                }
+
+                AddLoadedModDependencies(
+                    modsDir,
+                    loadedAssemblies,
+                    dependencyQueue,
+                    queuedAssemblies,
+                    representedAssemblyPaths,
+                    runtimeMods);
+
+                List<string> entries = runtimeMods
+                    .Where(info => info != null && !string.IsNullOrWhiteSpace(info.Name))
+                    .OrderBy(info => info.Name, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(info => info.AssemblyPath, StringComparer.OrdinalIgnoreCase)
+                    .Select(info => $"{info.Name}|{info.Version}|{info.Hash}")
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                snapshot = new List<string>(entries.Count + 1) { ModHooks.ModVersion };
+                snapshot.AddRange(entries);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: runtime mod scan failed, using filesystem fallback: {ex.Message}");
+                snapshot = null;
+                return false;
+            }
+        }
+
+        private static void AddLoadedModDependencies(
+            string modsDir,
+            IReadOnlyDictionary<string, Assembly> loadedAssemblies,
+            Queue<Assembly> dependencyQueue,
+            HashSet<string> queuedAssemblies,
+            HashSet<string> representedAssemblyPaths,
+            ICollection<RuntimeModInfo> output)
+        {
+            while (dependencyQueue.Count > 0)
+            {
+                Assembly owner = dependencyQueue.Dequeue();
+                AssemblyName[] references;
+                try
+                {
+                    references = owner.GetReferencedAssemblies();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (AssemblyName reference in references)
+                {
+                    Assembly dependency = FindLoadedAssembly(reference, loadedAssemblies);
+                    if (dependency == null)
+                    {
+                        continue;
+                    }
+
+                    EnqueueAssembly(dependency, dependencyQueue, queuedAssemblies);
+
+                    string assemblyPath = TryGetAssemblyPath(dependency);
+                    if (string.IsNullOrWhiteSpace(assemblyPath)
+                        || !IsPathInsideDirectory(assemblyPath, modsDir)
+                        || !representedAssemblyPaths.Add(assemblyPath))
+                    {
+                        continue;
+                    }
+
+                    string name = dependency.GetName()?.Name;
+                    string version = ResolveModVersion(null, assemblyPath);
+                    string hash = CalculateSHA256Cached(assemblyPath, null) ?? string.Empty;
+                    output.Add(new RuntimeModInfo
+                    {
+                        Name = NormalizeModField(name),
+                        Version = NormalizeModField(version),
+                        Hash = hash,
+                        AssemblyPath = assemblyPath
+                    });
+                }
+            }
+        }
+
+        private static Assembly FindLoadedAssembly(
+            AssemblyName reference,
+            IReadOnlyDictionary<string, Assembly> loadedAssemblies)
+        {
+            if (reference == null)
+            {
+                return null;
+            }
+
+            foreach (KeyValuePair<string, Assembly> entry in loadedAssemblies)
+            {
+                try
+                {
+                    if (AssemblyName.ReferenceMatchesDefinition(reference, entry.Value.GetName()))
+                    {
+                        return entry.Value;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        private static void EnqueueAssembly(
+            Assembly assembly,
+            Queue<Assembly> queue,
+            HashSet<string> queuedAssemblies)
+        {
+            if (assembly == null)
+            {
+                return;
+            }
+
+            string identity = assembly.FullName;
+            if (string.IsNullOrWhiteSpace(identity))
+            {
+                identity = TryGetAssemblyPath(assembly);
+            }
+
+            if (!string.IsNullOrWhiteSpace(identity) && queuedAssemblies.Add(identity))
+            {
+                queue.Enqueue(assembly);
+            }
+        }
+
+        private static string TryGetRuntimeModName(IMod mod)
+        {
+            try
+            {
+                string name = mod.GetName();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    return name.Trim();
+                }
+            }
+            catch
+            {
+            }
+
+            return mod.GetType().Name;
+        }
+
+        private static string TryGetRuntimeModVersion(IMod mod, string assemblyPath)
+        {
+            try
+            {
+                string version = mod.GetVersion();
+                if (!string.IsNullOrWhiteSpace(version))
+                {
+                    return version.Trim();
+                }
+            }
+            catch
+            {
+            }
+
+            return ResolveModVersion(null, assemblyPath);
+        }
+
+        private static string TryGetAssemblyPath(Assembly assembly)
+        {
+            try
+            {
+                string location = assembly?.Location;
+                return string.IsNullOrWhiteSpace(location) ? null : Path.GetFullPath(location);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool IsPathInsideDirectory(string filePath, string directory)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(directory))
+            {
+                return false;
+            }
+
+            try
+            {
+                string root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string candidate = Path.GetFullPath(filePath);
+                return candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string NormalizeModField(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "Unknown";
+            }
+
+            return value.Replace('|', '/').Replace('\r', ' ').Replace('\n', ' ').Trim();
         }
 
         private static bool TryResolveDirectoryMetadata(string modDirectory, out ModAssemblyMetadata metadata)

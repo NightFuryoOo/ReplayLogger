@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using HutongGames.PlayMaker;
 using Satchel.BetterMenus;
 
@@ -6,6 +7,7 @@ namespace Modding
 {
     public interface IMod
     {
+        string GetName();
         string GetVersion();
     }
 
@@ -13,6 +15,7 @@ namespace Modding
     {
         protected Mod(string name) { }
 
+        public virtual string GetName() => GetType().Name;
         public virtual string GetVersion() => "0.0.0";
         public virtual void Initialize() { }
     }
@@ -53,5 +56,6 @@ namespace Modding
         public static string ModVersion => "Unavailable";
 
         public static object GetMod(string modName) => null;
+        public static IEnumerable<IMod> GetAllMods(bool onlyEnabled = false, bool allowLoadError = false) => Array.Empty<IMod>();
     }
 }
