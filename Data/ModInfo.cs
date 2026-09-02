@@ -5,7 +5,7 @@ namespace ReplayLogger
     internal class ModInfo
     {
         public const string Name = "ReplayLogger";
-        public const string Version = "1.1.0.4";
+        public const string Version = "1.1.0.5";
 
     }
 }

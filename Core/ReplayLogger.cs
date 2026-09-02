@@ -823,8 +823,15 @@ namespace ReplayLogger
             }
         }
 
-        private static string GetCharmDisplayName(int charmId)
+        internal static string GetCharmDisplayName(int charmId)
         {
+            if (charmId == (int)Charm.Grimmchild)
+            {
+                return PlayerData.instance?.grimmChildLevel == 5
+                    ? "Carefree Melody"
+                    : "Grimmchild";
+            }
+
             if (charmId == (int)Charm.Kingsoul)
             {
                 PlayerData data = PlayerData.instance;
@@ -1625,10 +1632,19 @@ namespace ReplayLogger
     public static class CharmDamageTracker
     {
         private const string DefendersCrestOwnerName = "Knight/Charm Effects/Defender's Crest";
+        private const string ThornsOfAgonyOwnerName = "Knight/Charm Effects/Thorns of Agony";
+        private const string GlowingWombOwnerName = "Knight/Charm Effects/Glowing Womb";
+        private const string SporeShroomOwnerName = "Knight/Charm Effects/Spore Shroom";
+        private const string WeaversongOwnerName = "Knight/Charm Effects/Weaversong";
+        private const string DreamshieldOwnerName = "Knight/Charm Effects/Dreamshield";
+        private const string GrimmchildOwnerName = "Knight/Charm Effects/Grimmchild";
+        private const string FlukenestDefendersCrestOwnerName = "Knight/Charm Effects/Flukenest + Defender's Crest";
         private const string SharpShadowOwnerName = "Knight/Attacks/Sharp Shadow";
 
         private static readonly FieldInfo damageEnemiesDamageField =
             typeof(DamageEnemies).GetField("damageDealt", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        private static readonly FieldInfo extraDamageHpVarField =
+            typeof(ExtraDamageable).GetField("hpVar", BindingFlags.Instance | BindingFlags.NonPublic);
         private static readonly Dictionary<GameObject, CachedOwnerPathResult> trackedCharmOwnerPathCache = new(512);
         private static readonly List<GameObject> trackedCharmOwnerPathCacheCleanupBuffer = new(128);
         private const int TrackedCharmOwnerPathCacheHardLimit = 4096;
@@ -1638,6 +1654,8 @@ namespace ReplayLogger
         private const float NegativeTrackedCharmOwnerPathCacheMaxAgeSeconds = 1f;
         private static float lastTrackedCharmOwnerPathCacheCleanupTime;
         private static int trackedCharmOwnerPathCacheCleanupCursor;
+        [ThreadStatic]
+        private static GameObject pendingExtraDamageSource;
 
         private readonly struct CachedOwnerPathResult
         {
@@ -1659,31 +1677,56 @@ namespace ReplayLogger
             trackedCharmOwnerPathCacheCleanupBuffer.Clear();
             trackedCharmOwnerPathCacheCleanupCursor = 0;
             lastTrackedCharmOwnerPathCacheCleanupTime = 0f;
+            pendingExtraDamageSource = null;
         }
 
-        public static void TrackFromHitInstance(
+        public static void HandleSendExtraDamage(
             bool isLogging,
-            StreamWriter writer,
-            DamageChangeTracker damageChangeTracker,
-            string arenaName,
-            long lastUnixTime,
-            long nowUnixTime,
-            HitInstance hitInstance,
-            GameObject targetObject = null)
+            On.SendExtraDamage.orig_OnEnter orig,
+            SendExtraDamage self)
         {
-            TrackFromHitWithActualDamage(
-                isLogging,
-                writer,
-                damageChangeTracker,
-                arenaName,
-                lastUnixTime,
-                nowUnixTime,
-                hitInstance,
-                actualDamage: 0,
-                targetObject);
+            if (!isLogging || self == null)
+            {
+                orig(self);
+                return;
+            }
+
+            GameObject previousSource = pendingExtraDamageSource;
+            pendingExtraDamageSource = self.Owner;
+            try
+            {
+                orig(self);
+            }
+            finally
+            {
+                pendingExtraDamageSource = previousSource;
+            }
         }
 
-        public static void TrackFromHitWithActualDamage(
+        public static void HandleDamageEffectTicker(
+            bool isLogging,
+            On.DamageEffectTicker.orig_Update orig,
+            DamageEffectTicker self)
+        {
+            if (!isLogging || self == null)
+            {
+                orig(self);
+                return;
+            }
+
+            GameObject previousSource = pendingExtraDamageSource;
+            pendingExtraDamageSource = self.gameObject;
+            try
+            {
+                orig(self);
+            }
+            finally
+            {
+                pendingExtraDamageSource = previousSource;
+            }
+        }
+
+        public static void TrackConfirmedHit(
             bool isLogging,
             StreamWriter writer,
             DamageChangeTracker damageChangeTracker,
@@ -1691,7 +1734,6 @@ namespace ReplayLogger
             long lastUnixTime,
             long nowUnixTime,
             HitInstance hitInstance,
-            int actualDamage,
             GameObject targetObject = null)
         {
             if (!isLogging || writer == null || damageChangeTracker == null)
@@ -1699,7 +1741,7 @@ namespace ReplayLogger
                 return;
             }
 
-            int resolvedDamage = actualDamage > 0 ? actualDamage : Math.Max(0, hitInstance.DamageDealt);
+            int resolvedDamage = Math.Max(0, hitInstance.DamageDealt);
             if (resolvedDamage <= 0)
             {
                 return;
@@ -1721,9 +1763,39 @@ namespace ReplayLogger
                     continue;
                 }
 
-                float multiplier = actualDamage > 0 ? 1f : hitInstance.Multiplier;
-                damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, resolvedDamage, multiplier);
+                damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, resolvedDamage, hitInstance.Multiplier);
             }
+        }
+
+        public static void TrackPlayMakerHit(
+            bool isLogging,
+            StreamWriter writer,
+            DamageChangeTracker damageChangeTracker,
+            string arenaName,
+            long lastUnixTime,
+            long nowUnixTime,
+            GameObject ownerObject,
+            HitInstance hitInstance)
+        {
+            if (!isLogging || writer == null || damageChangeTracker == null || ownerObject == null)
+            {
+                return;
+            }
+
+            if (!TryResolveTrackedCharmOwnerPath(ownerObject, out string ownerPath))
+            {
+                return;
+            }
+
+            int damage = Math.Max(0, hitInstance.DamageDealt);
+            if (damage <= 0)
+            {
+                return;
+            }
+
+            long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, damage, hitInstance.Multiplier);
         }
 
         public static void HandleDoDamage(
@@ -1746,8 +1818,7 @@ namespace ReplayLogger
                 self.gameObject != null &&
                 TryResolveTrackedCharmOwnerPath(self.gameObject, out ownerPath);
 
-            HealthManager targetManager = canTrack ? ResolveTargetHealthManager(target) : null;
-            int hpBefore = targetManager != null ? Math.Max(0, targetManager.hp) : -1;
+            int nominalDamage = canTrack ? ReadDamageDealt(self) : 0;
 
             orig(self, target);
 
@@ -1758,31 +1829,71 @@ namespace ReplayLogger
                     return;
                 }
 
-                int damage = 0;
-                if (targetManager != null)
-                {
-                    int hpAfter = Math.Max(0, targetManager.hp);
-                    damage = Math.Max(0, hpBefore - hpAfter);
-                }
-
-                if (damage <= 0)
-                {
-                    damage = ReadDamageDealt(self);
-                }
-
-                if (damage <= 0)
+                if (nominalDamage <= 0)
                 {
                     return;
                 }
 
                 long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
                 string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
-                damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, damage, 1f);
+                damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, nominalDamage, 1f);
             }
             catch (Exception e)
             {
                 InternalDiagnostics.Warn($"ReplayLogger: failed to track charm damage in DamageChange: {e.Message}");
             }
+        }
+
+        public static void HandleDirectCharmDamage(
+            bool isLogging,
+            StreamWriter writer,
+            DamageChangeTracker damageChangeTracker,
+            string arenaName,
+            long lastUnixTime,
+            long nowUnixTime,
+            On.HutongGames.PlayMaker.Actions.IntOperator.orig_OnEnter orig,
+            HutongGames.PlayMaker.Actions.IntOperator self)
+        {
+            if (!isLogging || writer == null || damageChangeTracker == null || self == null)
+            {
+                orig(self);
+                return;
+            }
+
+            GameObject ownerObject = self?.Owner;
+            string ownerPath = ownerObject?.GetFullPath();
+            string damageOwner = null;
+            if (IsCharmEquipped((int)Charm.Dreamshield) && IsDreamshieldSource(ownerObject, ownerPath))
+            {
+                damageOwner = DreamshieldOwnerName;
+            }
+            else if (IsCharmEquipped((int)Charm.Grimmchild) && IsGrimmchildSource(ownerObject, ownerPath))
+            {
+                damageOwner = GrimmchildOwnerName;
+            }
+            else if (IsCharmEquipped((int)Charm.Weaversong) && IsWeaversongSource(ownerObject, ownerPath))
+            {
+                damageOwner = WeaversongOwnerName;
+            }
+
+            bool canTrack =
+                self.operation == HutongGames.PlayMaker.Actions.IntOperator.Operation.Subtract &&
+                string.Equals(self.integer1?.Name, "Enemy HP", StringComparison.Ordinal) &&
+                string.Equals(self.integer2?.Name, "Damage", StringComparison.Ordinal) &&
+                string.Equals(self.storeResult?.Name, "Enemy HP", StringComparison.Ordinal) &&
+                !string.IsNullOrEmpty(damageOwner);
+            int damage = canTrack ? Math.Max(0, self.integer2.Value) : 0;
+
+            orig(self);
+
+            if (!canTrack || damage <= 0)
+            {
+                return;
+            }
+
+            long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            damageChangeTracker.Track(damageOwner, scene, unixTime - lastUnixTime, damage, 1f);
         }
 
         public static void HandleHitTakerHit(
@@ -1812,24 +1923,18 @@ namespace ReplayLogger
 
             long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-            int actualDamage = 0;
-            if (targetManager != null)
-            {
-                int hpAfter = Math.Max(0, targetManager.hp);
-                actualDamage = Math.Max(0, hpBefore - hpAfter);
-            }
-
-            if (actualDamage <= 0)
-            {
-                actualDamage = Math.Max(0, hitInstance.DamageDealt);
-            }
-
-            if (actualDamage <= 0)
+            if (targetManager == null)
             {
                 return;
             }
 
-            TrackFromHitWithActualDamage(
+            int hpAfter = Math.Max(0, targetManager.hp);
+            if (hpAfter == hpBefore)
+            {
+                return;
+            }
+
+            TrackConfirmedHit(
                 isLogging,
                 writer,
                 damageChangeTracker,
@@ -1837,7 +1942,6 @@ namespace ReplayLogger
                 lastUnixTime,
                 nowUnixTime,
                 hitInstance,
-                actualDamage,
                 targetGameObject);
         }
 
@@ -1852,11 +1956,10 @@ namespace ReplayLogger
             ExtraDamageable self,
             ExtraDamageTypes extraDamageType)
         {
-            HealthManager targetManager =
-                isLogging && writer != null && damageChangeTracker != null && self != null
-                    ? self.GetComponent<HealthManager>()
-                    : null;
-            int hpBefore = targetManager != null ? Math.Max(0, targetManager.hp) : -1;
+            bool canTrack = isLogging && writer != null && damageChangeTracker != null && self != null;
+            int hpBefore = 0;
+            bool hasHpBefore = canTrack && TryReadExtraDamageHp(self, out hpBefore);
+            int nominalDamage = Math.Max(0, ExtraDamageable.GetDamageOfType(extraDamageType));
 
             orig(self, extraDamageType);
 
@@ -1865,30 +1968,21 @@ namespace ReplayLogger
                 return;
             }
 
-            int damage = 0;
-            if (targetManager != null)
-            {
-                int hpAfter = Math.Max(0, targetManager.hp);
-                damage = Math.Max(0, hpBefore - hpAfter);
-            }
-
-            if (damage <= 0)
-            {
-                damage = Math.Max(0, ExtraDamageable.GetDamageOfType(extraDamageType));
-            }
-
-            if (damage <= 0)
+            if (!hasHpBefore || nominalDamage <= 0 || !TryReadExtraDamageHp(self, out int hpAfter))
             {
                 return;
             }
 
-            string ownerPath = extraDamageType switch
+            if (hpAfter == hpBefore)
             {
-                ExtraDamageTypes.Dung => DefendersCrestOwnerName,
-                ExtraDamageTypes.Dung2 => DefendersCrestOwnerName,
-                ExtraDamageTypes.Spore when IsCharmEquipped((int)Charm.DefendersCrest) => DefendersCrestOwnerName,
-                _ => null
-            };
+                return;
+            }
+
+            string ownerPath = ResolveExtraDamageOwner(pendingExtraDamageSource, extraDamageType);
+            if (string.IsNullOrEmpty(ownerPath))
+            {
+                ownerPath = ResolveExtraDamageOwnerWithoutSource(extraDamageType);
+            }
 
             if (string.IsNullOrEmpty(ownerPath))
             {
@@ -1897,7 +1991,42 @@ namespace ReplayLogger
 
             long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
             string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
-            damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, damage, 1f);
+            damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, nominalDamage, 1f);
+        }
+
+        private static bool TryReadExtraDamageHp(ExtraDamageable self, out int hp)
+        {
+            hp = 0;
+            if (self == null)
+            {
+                return false;
+            }
+
+            HealthManager healthManager = self.GetComponent<HealthManager>();
+            if (healthManager != null)
+            {
+                hp = Math.Max(0, healthManager.hp);
+                return true;
+            }
+
+            if (extraDamageHpVarField == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (extraDamageHpVarField.GetCachedValue(self) is HutongGames.PlayMaker.FsmInt hpVar)
+                {
+                    hp = Math.Max(0, hpVar.Value);
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
         }
 
         private static string[] ResolveOwnerCandidates(HitInstance hitInstance)
@@ -1908,6 +2037,21 @@ namespace ReplayLogger
             {
                 owners.Add(ownerPathFromSource);
                 return owners.ToArray();
+            }
+
+            if (sourceObject != null)
+            {
+                string sourcePath = sourceObject.GetFullPath();
+                if (string.IsNullOrEmpty(sourcePath))
+                {
+                    sourcePath = sourceObject.name;
+                }
+
+                if (!string.IsNullOrEmpty(sourcePath))
+                {
+                    owners.Add(sourcePath);
+                    return owners.ToArray();
+                }
             }
 
             if (hitInstance.AttackType == AttackTypes.SharpShadow)
@@ -1991,6 +2135,50 @@ namespace ReplayLogger
             return false;
         }
 
+        private static bool TryResolveNamedCharmOwner(GameObject sourceObject, string sourcePath, out string ownerPath)
+        {
+            ownerPath = null;
+
+            if (IsCharmEquipped((int)Charm.ThornsOfAgony) &&
+                (ContainsToken(sourcePath, "thorn") || HasComponentTypeTokenInParents(sourceObject, "thorn")))
+            {
+                ownerPath = ThornsOfAgonyOwnerName;
+                return true;
+            }
+
+            if (IsCharmEquipped((int)Charm.GlowingWomb) && IsGlowingWombSource(sourceObject, sourcePath))
+            {
+                ownerPath = ResolveGlowingWombOwner(cloud: false);
+                return true;
+            }
+
+            if (IsCharmEquipped((int)Charm.Weaversong) && IsWeaversongSource(sourceObject, sourcePath))
+            {
+                ownerPath = WeaversongOwnerName;
+                return true;
+            }
+
+            if (IsCharmEquipped((int)Charm.Dreamshield) && IsDreamshieldSource(sourceObject, sourcePath))
+            {
+                ownerPath = DreamshieldOwnerName;
+                return true;
+            }
+
+            if (IsCharmEquipped((int)Charm.Grimmchild) && IsGrimmchildSource(sourceObject, sourcePath))
+            {
+                ownerPath = GrimmchildOwnerName;
+                return true;
+            }
+
+            if (IsCharmEquipped((int)Charm.SporeShroom) && ContainsToken(sourcePath, "spore"))
+            {
+                ownerPath = ResolveSporeShroomOwner();
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool TryResolveTrackedCharmOwnerPath(GameObject sourceObject, out string ownerPath)
         {
             ownerPath = null;
@@ -2035,9 +2223,9 @@ namespace ReplayLogger
                 sourcePath = sourceObject.name ?? string.Empty;
             }
 
-            if (IsDisabledCharmSource(sourceObject, sourcePath))
+            if (TryResolveNamedCharmOwner(sourceObject, sourcePath, out ownerPath))
             {
-                return false;
+                return true;
             }
 
             if (TryMapSourcePathToCharmOwner(sourcePath, out ownerPath))
@@ -2161,35 +2349,135 @@ namespace ReplayLogger
                 endIndexExclusive >= remainingCount ? 0 : endIndexExclusive;
         }
 
-        private static bool IsDisabledCharmSource(GameObject sourceObject, string sourcePath)
+        private static string ResolveExtraDamageOwner(GameObject sourceObject, ExtraDamageTypes extraDamageType)
         {
-            bool fromPath =
-                sourcePath.IndexOf("womb", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                sourcePath.IndexOf("hatchling", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                sourcePath.IndexOf("dreamshield", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                sourcePath.IndexOf("orbitshield", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                sourcePath.IndexOf("orbit shield", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                sourcePath.IndexOf("weaver", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                sourcePath.IndexOf("weaverling", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                sourcePath.IndexOf("scuttler", StringComparison.OrdinalIgnoreCase) >= 0;
-            if (fromPath)
+            string sourcePath = sourceObject?.GetFullPath();
+            if (string.IsNullOrEmpty(sourcePath) && sourceObject != null)
             {
-                return true;
+                sourcePath = sourceObject.name ?? string.Empty;
             }
 
-            if (sourceObject == null)
+            if (IsGlowingWombSource(sourceObject, sourcePath))
             {
-                return false;
+                return ResolveGlowingWombOwner(cloud: true);
             }
 
-            return HasComponentInParentsByName(sourceObject, "KnightHatchling") ||
+            if (ContainsToken(sourcePath, "fluke"))
+            {
+                return FlukenestDefendersCrestOwnerName;
+            }
+
+            if (ContainsToken(sourcePath, "dung explosion") &&
+                IsCharmEquipped((int)Charm.GlowingWomb) &&
+                IsCharmEquipped((int)Charm.DefendersCrest))
+            {
+                return ResolveGlowingWombOwner(cloud: true);
+            }
+
+            if (ContainsToken(sourcePath, "spore"))
+            {
+                return ResolveSporeShroomOwner();
+            }
+
+            if (extraDamageType == ExtraDamageTypes.Spore && IsCharmEquipped((int)Charm.SporeShroom))
+            {
+                return ResolveSporeShroomOwner();
+            }
+
+            if (extraDamageType == ExtraDamageTypes.Dung2 &&
+                IsCharmEquipped((int)Charm.SporeShroom) &&
+                IsCharmEquipped((int)Charm.DefendersCrest))
+            {
+                return ResolveSporeShroomOwner();
+            }
+
+            if (ContainsToken(sourcePath, "dung") ||
+                ContainsToken(sourcePath, "crest") ||
+                ContainsToken(sourcePath, "gas"))
+            {
+                return DefendersCrestOwnerName;
+            }
+
+            return null;
+        }
+
+        private static string ResolveExtraDamageOwnerWithoutSource(ExtraDamageTypes extraDamageType)
+        {
+            if (extraDamageType == ExtraDamageTypes.Spore && IsCharmEquipped((int)Charm.SporeShroom))
+            {
+                return ResolveSporeShroomOwner();
+            }
+
+            if (extraDamageType == ExtraDamageTypes.Dung || extraDamageType == ExtraDamageTypes.Dung2)
+            {
+                return DefendersCrestOwnerName;
+            }
+
+            return null;
+        }
+
+        private static string ResolveGlowingWombOwner(bool cloud)
+        {
+            bool defendersCrest = IsCharmEquipped((int)Charm.DefendersCrest);
+            string suffix = cloud ? " (Cloud)" : " (Hatchling)";
+
+            if (defendersCrest)
+            {
+                return GlowingWombOwnerName + " + Defender's Crest" + suffix;
+            }
+
+            return GlowingWombOwnerName;
+        }
+
+        private static string ResolveSporeShroomOwner()
+        {
+            return IsCharmEquipped((int)Charm.DefendersCrest)
+                ? SporeShroomOwnerName + " + Defender's Crest"
+                : SporeShroomOwnerName;
+        }
+
+        private static bool IsGlowingWombSource(GameObject sourceObject, string sourcePath)
+        {
+            return ContainsToken(sourcePath, "womb") ||
+                   ContainsToken(sourcePath, "hatchling") ||
+                   HasComponentInParentsByName(sourceObject, "KnightHatchling") ||
+                   HasComponentTypeTokenInParents(sourceObject, "hatchling");
+        }
+
+        private static bool IsWeaversongSource(GameObject sourceObject, string sourcePath)
+        {
+            return ContainsToken(sourcePath, "weaver") ||
+                   ContainsToken(sourcePath, "scuttler") ||
                    HasComponentInParentsByName(sourceObject, "WeaverlingEnemyList") ||
-                   HasComponentTypeTokenInParents(sourceObject, "hatch") ||
                    HasComponentTypeTokenInParents(sourceObject, "weaver") ||
-                   HasComponentTypeTokenInParents(sourceObject, "scuttler") ||
+                   HasComponentTypeTokenInParents(sourceObject, "scuttler");
+        }
+
+        private static bool IsDreamshieldSource(GameObject sourceObject, string sourcePath)
+        {
+            return ContainsToken(sourcePath, "dreamshield") ||
+                   ContainsToken(sourcePath, "dream shield") ||
+                   ContainsToken(sourcePath, "orbitshield") ||
+                   ContainsToken(sourcePath, "orbit shield") ||
                    HasComponentTypeTokenInParents(sourceObject, "orbitshield") ||
                    (HasComponentTypeTokenInParents(sourceObject, "dream") &&
                     HasComponentTypeTokenInParents(sourceObject, "shield"));
+        }
+
+        private static bool IsGrimmchildSource(GameObject sourceObject, string sourcePath)
+        {
+            return ContainsToken(sourcePath, "grimmchild") ||
+                   ContainsToken(sourcePath, "grimm child") ||
+                   ContainsToken(sourcePath, "grimmball") ||
+                   HasComponentTypeTokenInParents(sourceObject, "firegrimmball") ||
+                   HasComponentTypeTokenInParents(sourceObject, "grimmchild");
+        }
+
+        private static bool ContainsToken(string value, string token)
+        {
+            return !string.IsNullOrEmpty(value) &&
+                   !string.IsNullOrEmpty(token) &&
+                   value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool IsKnownCoreKnightDamagePath(string sourcePath)

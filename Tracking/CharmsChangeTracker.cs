@@ -123,7 +123,7 @@ namespace ReplayLogger
         {
             try
             {
-                return ((Charm)charmId).ToString();
+                return CoreSessionLogger.GetCharmDisplayName(charmId);
             }
             catch
             {

@@ -199,6 +199,7 @@ namespace ReplayLogger
                 speedWarnBuffer = new BufferedLogSection($"{currentNameLog}.speed.tmp", BufferedSectionThreshold);
                 hitWarnBuffer = new BufferedLogSection($"{currentNameLog}.hit.tmp", BufferedSectionThreshold);
                 writer = new AsyncBlockLogWriter(currentNameLog, lastString, activeEncryptionSession, BlockSizeBytes, BlockMaxAgeMs, LogQueueCapacity);
+                CustomKnightSettingsManager.StartTracking(manualStartScene, lastUnixTime);
 
                 AheSettingsManager.RefreshSnapshot();
                 speedWarnTracker.Reset(Mathf.Max(Time.timeScale, 0f));

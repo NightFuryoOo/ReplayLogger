@@ -118,7 +118,6 @@ namespace ReplayLogger
         private static List<string> ScanModsInternal(string modsDir)
         {
             List<string> modInfo = new() { ModHooks.ModVersion };
-            List<string> unregisteredMods = new();
 
             List<string> modDirectories = Directory.GetDirectories(modsDir)
                 .Where(IsTrackableModDirectory)
@@ -137,7 +136,7 @@ namespace ReplayLogger
 
                     if (!TryResolveDirectoryMetadata(modDirectory, out ModAssemblyMetadata metadata))
                     {
-                        AddUnregisteredModEntries(unregisteredMods, modDirectory);
+                        AddFallbackModEntries(modInfo, modDirectory);
                         continue;
                     }
 
@@ -147,20 +146,14 @@ namespace ReplayLogger
                 catch (Exception ex)
                 {
                     global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: error processing directory '{modDirectory}': {ex.Message}");
-                    AddUnregisteredModEntries(unregisteredMods, modDirectory);
+                    AddFallbackModEntries(modInfo, modDirectory);
                 }
             }
 
-            if (unregisteredMods.Count == 0)
-            {
-                return modInfo;
-            }
-
-            List<string> report = [.. modInfo, "Unregistered mods:", .. unregisteredMods];
-            return report;
+            return modInfo;
         }
 
-        private static void AddUnregisteredModEntries(List<string> output, string modDirectory)
+        private static void AddFallbackModEntries(List<string> output, string modDirectory)
         {
             if (output == null || string.IsNullOrEmpty(modDirectory))
             {
@@ -175,19 +168,34 @@ namespace ReplayLogger
 
                 if (dllFiles.Length == 0)
                 {
-                    output.Add(modDirectory);
                     return;
                 }
 
                 foreach (string dllPath in dllFiles)
                 {
-                    string hash = CalculateSHA256Cached(dllPath, null) ?? string.Empty;
-                    output.Add($"{modDirectory}|{Path.GetFileName(dllPath)}|{hash}");
+                    string modName = Path.GetFileNameWithoutExtension(dllPath);
+                    string version = ResolveModVersion(null, dllPath);
+                    string dllSignature = null;
+
+                    if (TryReadAssemblyMetadata(dllPath, out ModAssemblyMetadata metadata, out string errorMessage)
+                        && metadata != null)
+                    {
+                        modName = metadata.ModName;
+                        version = metadata.Version;
+                        dllSignature = metadata.DllSignature;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(errorMessage))
+                    {
+                        global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: cannot inspect '{dllPath}': {errorMessage}");
+                    }
+
+                    string hash = CalculateSHA256Cached(dllPath, dllSignature) ?? string.Empty;
+                    output.Add($"{modName}|{version}|{hash}");
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                output.Add(modDirectory);
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: cannot record fallback assemblies from '{modDirectory}': {ex.Message}");
             }
         }
 

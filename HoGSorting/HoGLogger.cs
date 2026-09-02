@@ -276,7 +276,10 @@ namespace ReplayLogger
             On.QuitToMenu.Start += QuitToMenu_Start;
             On.SpellFluke.DoDamage += SpellFluke_DoDamage;
             On.DamageEnemies.DoDamage += DamageEnemies_DoDamage;
+            On.DamageEffectTicker.Update += DamageEffectTicker_Update;
             On.HitTaker.Hit += HitTaker_Hit;
+            On.HutongGames.PlayMaker.Actions.IntOperator.OnEnter += CharmDamageIntOperator_OnEnter;
+            On.SendExtraDamage.OnEnter += SendExtraDamage_OnEnter;
             On.ExtraDamageable.RecieveExtraDamage += ExtraDamageable_RecieveExtraDamage;
             ModHooks.HitInstanceHook += ModHooks_HitInstanceHook;
             ModHooks.AfterTakeDamageHook += ModHooks_AfterTakeDamageHook;
@@ -301,7 +304,10 @@ namespace ReplayLogger
             On.QuitToMenu.Start -= QuitToMenu_Start;
             On.SpellFluke.DoDamage -= SpellFluke_DoDamage;
             On.DamageEnemies.DoDamage -= DamageEnemies_DoDamage;
+            On.DamageEffectTicker.Update -= DamageEffectTicker_Update;
             On.HitTaker.Hit -= HitTaker_Hit;
+            On.HutongGames.PlayMaker.Actions.IntOperator.OnEnter -= CharmDamageIntOperator_OnEnter;
+            On.SendExtraDamage.OnEnter -= SendExtraDamage_OnEnter;
             On.ExtraDamageable.RecieveExtraDamage -= ExtraDamageable_RecieveExtraDamage;
             ModHooks.HitInstanceHook -= ModHooks_HitInstanceHook;
             ModHooks.AfterTakeDamageHook -= ModHooks_AfterTakeDamageHook;
@@ -992,23 +998,22 @@ namespace ReplayLogger
 
             if (owner?.GameObject == null)
             {
-                CharmDamageTracker.TrackFromHitInstance(
-                    isLogging,
-                    writer,
-                    damageChangeTracker,
-                    activeArena,
-                    lastUnixTime,
-                    GetCachedFrameUnixTimeOrNow(),
-                    hit);
                 return hit;
             }
 
             long unixTime = GetCachedFrameUnixTimeOrNow();
             GameObject ownerObject = owner.GameObject;
-            int ownerId = ownerObject.GetInstanceID();
             string ownerName = GetCachedOwnerPath(ownerObject);
 
-            damageChangeTracker.Track(ownerId, ownerName, activeArena, unixTime - lastUnixTime, hit.DamageDealt, hit.Multiplier);
+            CharmDamageTracker.TrackPlayMakerHit(
+                isLogging,
+                writer,
+                damageChangeTracker,
+                activeArena,
+                lastUnixTime,
+                unixTime,
+                ownerObject,
+                hit);
 
             if (!string.IsNullOrEmpty(ownerName) &&
                 ownerName.StartsWith("Knight/", StringComparison.Ordinal))
@@ -1082,7 +1087,7 @@ namespace ReplayLogger
                 return;
             }
 
-            CharmDamageTracker.TrackFromHitWithActualDamage(
+            CharmDamageTracker.TrackConfirmedHit(
                 isLogging,
                 writer,
                 damageChangeTracker,
@@ -1090,7 +1095,6 @@ namespace ReplayLogger
                 lastUnixTime,
                 GetCachedFrameUnixTimeOrNow(),
                 hitInstance,
-                hpBefore - hpAfter,
                 self.gameObject);
 
             TrackEnemyHealthManager(self);
@@ -1482,6 +1486,27 @@ namespace ReplayLogger
                 recursionDepth);
         }
 
+        private static void DamageEffectTicker_Update(On.DamageEffectTicker.orig_Update orig, DamageEffectTicker self)
+        {
+            CharmDamageTracker.HandleDamageEffectTicker(isLogging && writer != null, orig, self);
+        }
+
+        private static void CharmDamageIntOperator_OnEnter(
+            On.HutongGames.PlayMaker.Actions.IntOperator.orig_OnEnter orig,
+            HutongGames.PlayMaker.Actions.IntOperator self)
+        {
+            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            CharmDamageTracker.HandleDirectCharmDamage(
+                isLogging,
+                writer,
+                damageChangeTracker,
+                activeArena,
+                lastUnixTime,
+                nowUnixTime,
+                orig,
+                self);
+        }
+
         private static void ExtraDamageable_RecieveExtraDamage(On.ExtraDamageable.orig_RecieveExtraDamage orig, ExtraDamageable self, ExtraDamageTypes extraDamageType)
         {
             long nowUnixTime = GetCachedFrameUnixTimeOrNow();
@@ -1495,6 +1520,11 @@ namespace ReplayLogger
                 orig,
                 self,
                 extraDamageType);
+        }
+
+        private static void SendExtraDamage_OnEnter(On.SendExtraDamage.orig_OnEnter orig, SendExtraDamage self)
+        {
+            CharmDamageTracker.HandleSendExtraDamage(isLogging && writer != null, orig, self);
         }
 
         private static void MonitorAttemptSeparator(long nowUnixTime)
@@ -1567,6 +1597,7 @@ namespace ReplayLogger
                     hitWarnBuffer = new BufferedLogSection(null, BufferedSectionThreshold);
 
                     writer = new AsyncBlockLogWriter(currentTempFile, masterKeyBlob, masterEncryptionSession, BlockSizeBytes, BlockMaxAgeMs, LogQueueCapacity);
+                    CustomKnightSettingsManager.StartTracking(arenaName, lastUnixTime);
 
                     CoreSessionLogger.WriteEncryptedModSnapshot(writer, ModsDirectory, "---------------------------------------------------");
 

@@ -32,6 +32,9 @@ namespace ReplayLogger
         private KeyloggerLogEncryption.Session activeEncryptionSession;
         private string lastScene;
         private (string name, List<string> list) currentPanteon;
+        private List<string> capturedPantheonSequence;
+        private int capturedPantheonNumber;
+        private bool currentPantheonUsesTrueBossRush;
 
         private long lastUnixTime;
         private long startUnixTime;
@@ -126,6 +129,15 @@ namespace ReplayLogger
             "GG_Atrium",
             "GG_Atrium_Roof"
         };
+        private static readonly HashSet<string> TrueBossRushRemovedScenes = new(StringComparer.Ordinal)
+        {
+            "GG_Spa",
+            "GG_Engine",
+            "GG_Engine_Prime",
+            "GG_Engine_Root",
+            "GG_Unn",
+            "GG_Wyrm"
+        };
         private static Hook debugKillAllHook;
         private static Hook debugKillSelfHook;
         private static readonly string[] HitWarnSectionHeaderLines = { "\n\n", "HitWarn:" };
@@ -150,7 +162,10 @@ namespace ReplayLogger
             On.SceneLoad.RecordEndTime += SceneLoad_RecordEndTime;
             On.SpellFluke.DoDamage += SpellFluke_DoDamage;
             On.DamageEnemies.DoDamage += DamageEnemies_DoDamage;
+            On.DamageEffectTicker.Update += DamageEffectTicker_Update;
             On.HitTaker.Hit += HitTaker_Hit;
+            On.HutongGames.PlayMaker.Actions.IntOperator.OnEnter += CharmDamageIntOperator_OnEnter;
+            On.SendExtraDamage.OnEnter += SendExtraDamage_OnEnter;
             On.ExtraDamageable.RecieveExtraDamage += ExtraDamageable_RecieveExtraDamage;
 
             ModHooks.HitInstanceHook += ModHooks_HitInstanceHook;
@@ -203,25 +218,48 @@ namespace ReplayLogger
         )
         {
             orig(sequence, bindings, playerData);
-            currentPantheonNumber = DeterminePantheonNumber(sequence);
+            capturedPantheonSequence = TryGetPantheonSequence(sequence);
+            capturedPantheonNumber = DeterminePantheonNumber(capturedPantheonSequence);
+            currentPantheonNumber = capturedPantheonNumber;
         }
 
-        private static int DeterminePantheonNumber(BossSequence sequence)
+        private static List<string> TryGetPantheonSequence(BossSequence sequence)
         {
             if (sequence == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                FieldInfo bossScenesField = typeof(BossSequence).GetField("bossScenes", flags);
+                if (bossScenesField?.GetCachedValue(sequence) is not BossScene[] bossScenes || bossScenes.Length == 0)
+                {
+                    return null;
+                }
+
+                return bossScenes
+                    .Where(scene => scene != null && !string.IsNullOrWhiteSpace(scene.sceneName))
+                    .Select(scene => scene.sceneName)
+                    .ToList();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static int DeterminePantheonNumber(IReadOnlyCollection<string> scenes)
+        {
+            if (scenes == null || scenes.Count == 0)
             {
                 return 0;
             }
 
             try
             {
-                FieldInfo bossScenesField = typeof(BossSequence).GetField("bossScenes", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (bossScenesField?.GetCachedValue(sequence) is not BossScene[] bossScenes || bossScenes.Length == 0)
-                {
-                    return 0;
-                }
-
-                HashSet<string> names = new(bossScenes.Select(scene => scene.sceneName), StringComparer.OrdinalIgnoreCase);
+                HashSet<string> names = new(scenes, StringComparer.OrdinalIgnoreCase);
                 if (names.Contains("GG_Wyrm")
                     || names.Contains("GG_Radiance")
                     || names.Contains("GG_Engine_Root")
@@ -257,6 +295,54 @@ namespace ReplayLogger
             return 0;
         }
 
+        private bool TryResolvePantheonRoute(int pantheonNumber, out List<string> route)
+        {
+            route = GetStandardPantheonRoute(pantheonNumber);
+            currentPantheonUsesTrueBossRush = false;
+            if (route == null)
+            {
+                return false;
+            }
+
+            if (!GodhomeQolRandomPantheonsIntegration.IsTrueBossRushEnabled(pantheonNumber))
+            {
+                return true;
+            }
+
+            List<string> expectedRoute = route
+                .Where(scene => !TrueBossRushRemovedScenes.Contains(scene))
+                .ToList();
+            bool sequenceMatches = capturedPantheonNumber == pantheonNumber
+                && capturedPantheonSequence != null
+                && capturedPantheonSequence.SequenceEqual(expectedRoute, StringComparer.Ordinal);
+            if (!sequenceMatches)
+            {
+                global::ReplayLogger.InternalDiagnostics.Warn(
+                    $"ReplayLogger: rejected unexpected GodhomeQoL True Boss Rush route for P{pantheonNumber}.");
+                route = null;
+                return false;
+            }
+
+            currentPantheonUsesTrueBossRush = true;
+            route = new List<string>(capturedPantheonSequence);
+            global::ReplayLogger.InternalDiagnostics.Info(
+                $"ReplayLogger: using validated GodhomeQoL True Boss Rush route for P{pantheonNumber}.");
+            return true;
+        }
+
+        private static List<string> GetStandardPantheonRoute(int pantheonNumber)
+        {
+            return pantheonNumber switch
+            {
+                1 => Panteons.P1.ToList(),
+                2 => Panteons.P2.ToList(),
+                3 => Panteons.P3.ToList(),
+                4 => Panteons.P4.ToList(),
+                5 => Panteons.P5.ToList(),
+                _ => null
+            };
+        }
+
 
 
         private HitInstance ModHooks_HitInstanceHook(HutongGames.PlayMaker.Fsm owner, HitInstance hit)
@@ -268,32 +354,23 @@ namespace ReplayLogger
 
             if (owner == null || owner.GameObject == null)
             {
-                string fallbackScene = ResolveDamageChangeSceneTag();
-                if (!string.IsNullOrEmpty(fallbackScene))
-                {
-                    CharmDamageTracker.TrackFromHitInstance(
-                        isPlayChalange,
-                        writer,
-                        damageChangeTracker,
-                        fallbackScene,
-                        lastUnixTime,
-                        GetCachedFrameUnixTimeOrNow(),
-                        hit);
-                }
                 return hit;
             }
 
             long unixTime = GetCachedFrameUnixTimeOrNow();
             string activeSceneName = GetActiveArenaSceneName();
             GameObject ownerObject = owner.GameObject;
-            int ownerId = ownerObject.GetInstanceID();
             string ownerName = GetCachedOwnerPath(ownerObject);
-            string damageScene = ResolveDamageChangeSceneTag();
 
-            if (!string.IsNullOrEmpty(damageScene))
-            {
-                damageChangeTracker.Track(ownerId, ownerName, damageScene, unixTime - lastUnixTime, hit.DamageDealt, hit.Multiplier);
-            }
+            CharmDamageTracker.TrackPlayMakerHit(
+                isPlayChalange,
+                writer,
+                damageChangeTracker,
+                activeSceneName,
+                lastUnixTime,
+                unixTime,
+                ownerObject,
+                hit);
 
             if (!string.IsNullOrEmpty(ownerName) &&
                 ownerName.StartsWith("Knight/", StringComparison.Ordinal))
@@ -479,7 +556,7 @@ namespace ReplayLogger
                 return;
             }
 
-            CharmDamageTracker.TrackFromHitWithActualDamage(
+            CharmDamageTracker.TrackConfirmedHit(
                 isPlayChalange,
                 writer,
                 damageChangeTracker,
@@ -487,7 +564,6 @@ namespace ReplayLogger
                 lastUnixTime,
                 GetCachedFrameUnixTimeOrNow(),
                 hitInstance,
-                hpBefore - hpAfter,
                 self.gameObject);
 
             TrackEnemyHealthManager(self);
@@ -1756,6 +1832,9 @@ namespace ReplayLogger
                     {
                         skipPantheonLogging = false;
                         currentPantheonNumber = 0;
+                        capturedPantheonNumber = 0;
+                        capturedPantheonSequence = null;
+                        currentPantheonUsesTrueBossRush = false;
                     }
 
                     lastScene = self.TargetSceneName;
@@ -1821,6 +1900,7 @@ namespace ReplayLogger
                         speedWarnBuffer = new BufferedLogSection($"{currentNameLog}.speed.tmp", BufferedSectionThreshold);
                         hitWarnBuffer = new BufferedLogSection($"{currentNameLog}.hit.tmp", BufferedSectionThreshold);
                         writer = new AsyncBlockLogWriter(currentNameLog, lastString, activeEncryptionSession, BlockSizeBytes, BlockMaxAgeMs, LogQueueCapacity);
+                        CustomKnightSettingsManager.StartTracking(self.TargetSceneName, lastUnixTime);
                         AheSettingsManager.RefreshSnapshot();
                         speedWarnTracker.Reset(Mathf.Max(Time.timeScale, 0f));
                         hitWarnTracker.Reset();
@@ -1891,7 +1971,16 @@ namespace ReplayLogger
 
                     if (self.TargetSceneName.Contains("GG_Vengefly_V") && lastScene == "GG_Atrium_Roof")
                     {
-                        currentPanteon = ("P5", Panteons.P5.ToList());
+                        if (!TryResolvePantheonRoute(5, out List<string> route))
+                        {
+                            skipPantheonLogging = true;
+                            AbortPantheonLogging();
+                            lastScene = self.TargetSceneName;
+                            orig(self);
+                            return;
+                        }
+
+                        currentPanteon = ("P5", route);
                         bossCounter++;
 
                         string startLine = $"{dataTime}|{lastUnixTime}|{self.TargetSceneName}| {bossCounter}*";
@@ -1940,16 +2029,16 @@ namespace ReplayLogger
                 {
                     if (currentPanteon.list == null && lastScene.Contains("GG_Boss_Door"))
                     {
+                        int pantheonNumber = 0;
                         if (self.TargetSceneName == Panteons.P1[0])
-                            currentPanteon = ("P1", Panteons.P1.ToList());
+                            pantheonNumber = 1;
                         if (self.TargetSceneName == Panteons.P2[0])
-                            currentPanteon = ("P2", Panteons.P2.ToList());
+                            pantheonNumber = 2;
                         if (self.TargetSceneName == Panteons.P3[0])
-                            currentPanteon = ("P3", Panteons.P3.ToList());
+                            pantheonNumber = 3;
                         if (self.TargetSceneName == Panteons.P4[0])
-                            currentPanteon = ("P4", Panteons.P4.ToList());
+                            pantheonNumber = 4;
 
-                        int pantheonNumber = GetPantheonNumber(currentPanteon.name);
                         if (pantheonNumber > 0 && GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber))
                         {
                             skipPantheonLogging = true;
@@ -1958,6 +2047,17 @@ namespace ReplayLogger
                             orig(self);
                             return;
                         }
+
+                        if (pantheonNumber == 0 || !TryResolvePantheonRoute(pantheonNumber, out List<string> route))
+                        {
+                            skipPantheonLogging = true;
+                            AbortPantheonLogging();
+                            lastScene = self.TargetSceneName;
+                            orig(self);
+                            return;
+                        }
+
+                        currentPanteon = ($"P{pantheonNumber}", route);
                     }
                     else if (currentPanteon.list != null)
                     {
@@ -2042,22 +2142,6 @@ namespace ReplayLogger
             }
 
             Close();
-        }
-
-        private static int GetPantheonNumber(string pantheonName)
-        {
-            if (string.IsNullOrWhiteSpace(pantheonName) || pantheonName.Length < 2 || pantheonName[0] != 'P')
-            {
-                return 0;
-            }
-
-            char digit = pantheonName[1];
-            if (digit < '1' || digit > '5')
-            {
-                return 0;
-            }
-
-            return digit - '0';
         }
 
         private void AbortPantheonLogging()
@@ -2154,6 +2238,9 @@ namespace ReplayLogger
             startUnixTime = 0;
             isPlayChalange = false;
             currentPantheonNumber = 0;
+            capturedPantheonNumber = 0;
+            capturedPantheonSequence = null;
+            currentPantheonUsesTrueBossRush = false;
             cachedFrameUnixTime = 0;
 
             customCanvas?.DestroyCanvas();
@@ -2215,6 +2302,11 @@ namespace ReplayLogger
             if (nextIndex >= panteonList.Count) return false;
 
             string expectedNextScene = panteonList[nextIndex];
+
+            if (currentPantheonUsesTrueBossRush)
+            {
+                return expectedNextScene == targetSceneName;
+            }
 
             if (expectedNextScene != targetSceneName)
             {
@@ -2455,6 +2547,10 @@ namespace ReplayLogger
                 startUnixTime = 0;
                 isPlayChalange = false;
                 isManualLogging = false;
+                currentPantheonNumber = 0;
+                capturedPantheonNumber = 0;
+                capturedPantheonSequence = null;
+                currentPantheonUsesTrueBossRush = false;
                 cachedFrameUnixTime = 0;
                 manualStartScene = null;
                 manualRoomHeaderWritten = false;
@@ -2595,6 +2691,33 @@ namespace ReplayLogger
                 recursionDepth);
         }
 
+        private void DamageEffectTicker_Update(On.DamageEffectTicker.orig_Update orig, DamageEffectTicker self)
+        {
+            CharmDamageTracker.HandleDamageEffectTicker(isPlayChalange && writer != null, orig, self);
+        }
+
+        private void CharmDamageIntOperator_OnEnter(
+            On.HutongGames.PlayMaker.Actions.IntOperator.orig_OnEnter orig,
+            HutongGames.PlayMaker.Actions.IntOperator self)
+        {
+            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            string damageScene = ResolveDamageChangeSceneTag();
+            if (string.IsNullOrEmpty(damageScene))
+            {
+                damageScene = lastScene;
+            }
+
+            CharmDamageTracker.HandleDirectCharmDamage(
+                isPlayChalange,
+                writer,
+                damageChangeTracker,
+                damageScene,
+                lastUnixTime,
+                nowUnixTime,
+                orig,
+                self);
+        }
+
         private void ExtraDamageable_RecieveExtraDamage(On.ExtraDamageable.orig_RecieveExtraDamage orig, ExtraDamageable self, ExtraDamageTypes extraDamageType)
         {
             long nowUnixTime = GetCachedFrameUnixTimeOrNow();
@@ -2614,6 +2737,11 @@ namespace ReplayLogger
                 orig,
                 self,
                 extraDamageType);
+        }
+
+        private void SendExtraDamage_OnEnter(On.SendExtraDamage.orig_OnEnter orig, SendExtraDamage self)
+        {
+            CharmDamageTracker.HandleSendExtraDamage(isPlayChalange && writer != null, orig, self);
         }
 
     }

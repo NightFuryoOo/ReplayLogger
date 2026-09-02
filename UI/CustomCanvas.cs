@@ -17,6 +17,16 @@ namespace ReplayLogger
 
     public class CustomCanvas
     {
+        private const float HudNumberRightMargin = 2.5f;
+        private const float HudTimeRightMargin = 5f;
+        private const float HudNumberTopMargin = 2.5f;
+        private const float HudTimeTopMargin = 17.5f;
+        private const float HudNumberWidth = 85f;
+        private const float HudTimeWidth = 80f;
+        private const float HudRowHeight = 25f;
+        private const float LoadingSpriteMargin = 12f;
+        private const float LoadingSpriteSize = 70f;
+
         public NumberInCanvas numberInCanvas;
         public LoadingSprite loadingSprite;
 
@@ -62,10 +72,8 @@ namespace ReplayLogger
             canvas.pixelPerfect = false;
 
             CanvasScaler scaler = _canvas.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
-            scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-            scaler.matchWidthOrHeight = 0.5f;
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+            _canvas.AddComponent<ResponsiveCanvasScale>();
 
             _canvas.AddComponent<GraphicRaycaster>();
             CanvasGroup canvasGroup = _canvas.AddComponent<CanvasGroup>();
@@ -75,11 +83,17 @@ namespace ReplayLogger
 
             Object.DontDestroyOnLoad(_canvas);
 
-            prefabNumberInCanvas = CreateWatermark(_canvas, new Vector2(915f, 525f), new Vector2(85, 25));
+            prefabNumberInCanvas = CreateHudText(
+                _canvas,
+                new Vector2(-HudNumberRightMargin, -HudNumberTopMargin),
+                HudNumberWidth);
 
-            timeInCanvas = CreateWatermark(_canvas, new Vector2(915f, 510f), new Vector2(80, 25));
+            timeInCanvas = CreateHudText(
+                _canvas,
+                new Vector2(-HudTimeRightMargin, -HudTimeTopMargin),
+                HudTimeWidth);
 
-            flagSpriteInCanvas = CreateSprite(_canvas, flagSpriteTrue, new Vector2(850f, -500f), new Vector2(70, 70));
+            flagSpriteInCanvas = CreateLoadingSprite(_canvas, flagSpriteTrue);
 
             savedFileToast = CreateWatermarkTopRight(_canvas, new Vector2(-10f, -10f), new Vector2(520f, 50f));
             savedFileToast.gameObject.SetActive(false);
@@ -125,7 +139,7 @@ namespace ReplayLogger
             GetCoroutineHost()?.StartCoroutine(DestroyAfterDelay(seconds));
         }
 
-        private Image CreateSprite(GameObject canvas, Sprite sprite, Vector2 pos, Vector2 size)
+        private Image CreateLoadingSprite(GameObject canvas, Sprite sprite)
         {
             GameObject imageObject = new GameObject("LoadingSprite");
             imageObject.transform.SetParent(canvas.transform, false);
@@ -133,39 +147,40 @@ namespace ReplayLogger
             Image imageComponent = imageObject.AddComponent<Image>();
             imageComponent.sprite = sprite;
             imageComponent.color *= new Color(1, 1, 1, 0.4f);
+            imageComponent.preserveAspect = true;
+            imageComponent.raycastTarget = false;
 
             RectTransform rectTransform = imageObject.GetComponent<RectTransform>();
-
-            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
-            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
-            rectTransform.pivot = new Vector2(0.5f, 0.5f);
-
-            rectTransform.anchoredPosition = pos;
-            rectTransform.sizeDelta = size;
+            rectTransform.anchorMin = new Vector2(1f, 0f);
+            rectTransform.anchorMax = new Vector2(1f, 0f);
+            rectTransform.pivot = new Vector2(1f, 0f);
+            rectTransform.anchoredPosition = new Vector2(-LoadingSpriteMargin, LoadingSpriteMargin);
+            rectTransform.sizeDelta = new Vector2(LoadingSpriteSize, LoadingSpriteSize);
 
             imageObject.SetActive(true);
 
             return imageComponent;
         }
 
-        private TextMeshProUGUI CreateWatermark(GameObject canvas, Vector2 pos, Vector2 size)
+        private TextMeshProUGUI CreateHudText(GameObject canvas, Vector2 anchoredPosition, float width)
         {
-
             GameObject watermarkObject = new GameObject("Watermark");
             watermarkObject.transform.SetParent(canvas.transform, false);
 
             TextMeshProUGUI textMeshProComponent = watermarkObject.AddComponent<TextMeshProUGUI>();
             textMeshProComponent.autoSizeTextContainer = true;
             textMeshProComponent.enableAutoSizing = true;
-
-            textMeshProComponent.color = Color.green*new Color(1,1,1,0.5f);
+            textMeshProComponent.alignment = TextAlignmentOptions.TopRight;
+            textMeshProComponent.enableWordWrapping = false;
+            textMeshProComponent.raycastTarget = false;
+            textMeshProComponent.color = Color.green * new Color(1, 1, 1, 0.5f);
 
             RectTransform rectTransform = watermarkObject.GetComponent<RectTransform>();
-            rectTransform.anchoredPosition = Vector2.zero;
-            rectTransform.sizeDelta = size;
-
-            rectTransform.localPosition = pos;
-
+            rectTransform.anchorMin = new Vector2(1f, 1f);
+            rectTransform.anchorMax = new Vector2(1f, 1f);
+            rectTransform.pivot = new Vector2(1f, 1f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = new Vector2(width, HudRowHeight);
 
             watermarkObject.SetActive(true);
 
@@ -369,6 +384,39 @@ namespace ReplayLogger
 
     internal sealed class CanvasCoroutineHost : MonoBehaviour
     {
+    }
+
+    internal sealed class ResponsiveCanvasScale : MonoBehaviour
+    {
+        private const float ReferenceHeight = 1080f;
+        private const float MinimumScale = 0.75f;
+        private const float MaximumScale = 2f;
+
+        private CanvasScaler canvasScaler;
+        private int lastScreenHeight = -1;
+
+        private void Awake()
+        {
+            canvasScaler = GetComponent<CanvasScaler>();
+            RefreshScale();
+        }
+
+        private void Update()
+        {
+            if (lastScreenHeight != Screen.height)
+            {
+                RefreshScale();
+            }
+        }
+
+        private void RefreshScale()
+        {
+            lastScreenHeight = Screen.height;
+            if (canvasScaler != null)
+            {
+                canvasScaler.scaleFactor = Mathf.Clamp(Screen.height / ReferenceHeight, MinimumScale, MaximumScale);
+            }
+        }
     }
 }
 

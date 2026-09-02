@@ -168,7 +168,7 @@ public enum Charm
     Dreamshield,
     Weaversong,
     Grimmchild,
-    CarefreeMelody,
+    CarefreeMelody = Grimmchild,
     MarkOfPurity = 41,
     VesselsLament,
     BoonOfHallownest,
