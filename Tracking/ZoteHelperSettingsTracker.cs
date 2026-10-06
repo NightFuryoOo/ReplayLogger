@@ -9,7 +9,8 @@ namespace ReplayLogger
 {
     internal sealed class ZoteHelperSettingsTracker
     {
-        private const string ZoteSceneName = "GG_Grey_Prince_Zote";
+
+        private const string GreyPrinceZoteArena = "GG_Grey_Prince_Zote";
 
         private bool hasInitialState;
         private string initialArenaName;
@@ -41,14 +42,18 @@ namespace ReplayLogger
         private PropertyInfo zoteSummonHoppingHpProperty;
         private FieldInfo zoteSummonLimitField;
         private PropertyInfo zoteSummonLimitProperty;
-        private FieldInfo moduleActiveField;
+        private FieldInfo zoteDoubleSummonsField;
+        private PropertyInfo zoteDoubleSummonsProperty;
+        private FieldInfo zoteSummonOnlyOnStartField;
+        private PropertyInfo zoteSummonOnlyOnStartProperty;
 
         private Type forceEnterTypeType;
         private bool forceEnterTypeResolved;
         private FieldInfo gpzEnterTypeField;
         private PropertyInfo gpzEnterTypeProperty;
 
-        public bool HasData => hasInitialState || changes.Count > 0;
+        public bool HasData => hasInitialState
+            && ((initialState.ModuleEnabled.HasValue && initialState.ModuleEnabled.Value) || changes.Count > 0);
 
         public void Reset()
         {
@@ -64,7 +69,12 @@ namespace ReplayLogger
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
-            currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
+            if (!IsGreyPrinceZoteArena(arenaName))
+            {
+                return;
+            }
+
+            currentArenaName = ArenaNormalization.NormalizeLenient(arenaName);
             currentBaseUnixTime = baseUnixTime;
             long now = baseUnixTime;
 
@@ -95,13 +105,19 @@ namespace ReplayLogger
             LogFieldChange("Zote Flying HP", currentState.ZoteFlyingHp, snapshot.ZoteFlyingHp, now);
             LogFieldChange("Zote Hopping HP", currentState.ZoteHoppingHp, snapshot.ZoteHoppingHp, now);
             LogFieldChange("Zote Summon Limit", currentState.ZoteSummonLimit, snapshot.ZoteSummonLimit, now);
-            LogFieldChange("Zote Summon Limit (In-Game)", currentState.ZoteSummonLimitInGame, snapshot.ZoteSummonLimitInGame, now);
+            LogFieldChange("Double Summons", currentState.DoubleSummons, snapshot.DoubleSummons, now);
+            LogFieldChange("Spawn Zoteling Only On Start", currentState.SummonOnlyOnStart, snapshot.SummonOnlyOnStart, now);
             LogFieldChange("Force GPZ Enter Type", currentState.GpzEnterType, snapshot.GpzEnterType, now);
             currentState = snapshot;
         }
 
         public void Update(string arenaName, long nowUnixTime)
         {
+            if (!IsGreyPrinceZoteArena(arenaName))
+            {
+                return;
+            }
+
             if (!hasInitialState)
             {
                 return;
@@ -131,7 +147,8 @@ namespace ReplayLogger
             LogFieldChange("Zote Flying HP", currentState.ZoteFlyingHp, snapshot.ZoteFlyingHp, now);
             LogFieldChange("Zote Hopping HP", currentState.ZoteHoppingHp, snapshot.ZoteHoppingHp, now);
             LogFieldChange("Zote Summon Limit", currentState.ZoteSummonLimit, snapshot.ZoteSummonLimit, now);
-            LogFieldChange("Zote Summon Limit (In-Game)", currentState.ZoteSummonLimitInGame, snapshot.ZoteSummonLimitInGame, now);
+            LogFieldChange("Double Summons", currentState.DoubleSummons, snapshot.DoubleSummons, now);
+            LogFieldChange("Spawn Zoteling Only On Start", currentState.SummonOnlyOnStart, snapshot.SummonOnlyOnStart, now);
             LogFieldChange("Force GPZ Enter Type", currentState.GpzEnterType, snapshot.GpzEnterType, now);
             currentState = snapshot;
         }
@@ -148,24 +165,25 @@ namespace ReplayLogger
                 return;
             }
 
-            List<string> batch = TempObjectPools.RentStringList(changes.Count + 13);
+            List<string> batch = TempObjectPools.RentStringList(changes.Count + 15);
             try
             {
-                batch.Add("  ZoteHelper:");
+                batch.Add("  Boss Manipulate:");
                 if (!string.IsNullOrEmpty(initialArenaName))
                 {
                     batch.Add($"    Initial Arena: {initialArenaName}");
                 }
                 batch.Add("    State:");
-                batch.Add($"      Enable ZoteHelper: {FormatOptionalToggle(initialState.ModuleEnabled)}");
-                batch.Add($"      Zote Boss HP: {FormatOptionalInt(initialState.ZoteBossHp)}");
-                batch.Add($"      Zote Immortal: {FormatOptionalToggle(initialState.ZoteImmortal)}");
-                batch.Add($"      Spawn Flying Zotelings: {FormatOptionalToggle(initialState.SpawnFlying)}");
-                batch.Add($"      Spawn Hopping Zotelings: {FormatOptionalToggle(initialState.SpawnHopping)}");
-                batch.Add($"      Zote Flying HP: {FormatOptionalInt(initialState.ZoteFlyingHp)}");
-                batch.Add($"      Zote Hopping HP: {FormatOptionalInt(initialState.ZoteHoppingHp)}");
-                batch.Add($"      Zote Summon Limit: {FormatOptionalInt(initialState.ZoteSummonLimit)}");
-                batch.Add($"      Zote Summon Limit (In-Game): {FormatOptionalInt(initialState.ZoteSummonLimitInGame)}");
+                batch.Add($"      Enable ZoteHelper: {OptionalFormatting.FormatOptionalToggle(initialState.ModuleEnabled)}");
+                batch.Add($"      Zote Boss HP: {OptionalFormatting.FormatOptionalInt(initialState.ZoteBossHp)}");
+                batch.Add($"      Zote Immortal: {OptionalFormatting.FormatOptionalToggle(initialState.ZoteImmortal)}");
+                batch.Add($"      Spawn Flying Zotelings: {OptionalFormatting.FormatOptionalToggle(initialState.SpawnFlying)}");
+                batch.Add($"      Spawn Hopping Zotelings: {OptionalFormatting.FormatOptionalToggle(initialState.SpawnHopping)}");
+                batch.Add($"      Zote Flying HP: {OptionalFormatting.FormatOptionalInt(initialState.ZoteFlyingHp)}");
+                batch.Add($"      Zote Hopping HP: {OptionalFormatting.FormatOptionalInt(initialState.ZoteHoppingHp)}");
+                batch.Add($"      Zote Summon Limit: {OptionalFormatting.FormatOptionalInt(initialState.ZoteSummonLimit)}");
+                batch.Add($"      Double Summons: {OptionalFormatting.FormatOptionalToggle(initialState.DoubleSummons)}");
+                batch.Add($"      Spawn Zoteling Only On Start: {OptionalFormatting.FormatOptionalToggle(initialState.SummonOnlyOnStart)}");
                 batch.Add($"      Force GPZ Enter Type: {FormatOptionalString(initialState.GpzEnterType)}");
                 batch.Add("    Changes:");
                 if (changes.Count == 0)
@@ -199,7 +217,8 @@ namespace ReplayLogger
                 TryGetZoteFlyingHp(out int flyingHp) ? new Optional<int>(flyingHp) : Optional<int>.None,
                 TryGetZoteHoppingHp(out int hoppingHp) ? new Optional<int>(hoppingHp) : Optional<int>.None,
                 TryGetZoteSummonLimit(out int summonLimit) ? new Optional<int>(summonLimit) : Optional<int>.None,
-                TryGetSummonLimitInGame(out int summonLimitInGame) ? new Optional<int>(summonLimitInGame) : Optional<int>.None,
+                TryGetZoteDoubleSummons(out bool doubleSummons) ? new Optional<bool>(doubleSummons) : Optional<bool>.None,
+                TryGetZoteSummonOnlyOnStart(out bool summonOnlyOnStart) ? new Optional<bool>(summonOnlyOnStart) : Optional<bool>.None,
                 TryGetGpzEnterType(out string enterType) && !string.IsNullOrWhiteSpace(enterType) ? new Optional<string>(enterType) : Optional<string>.None);
         }
 
@@ -210,7 +229,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalToggle(previous)} -> {OptionalFormatting.FormatOptionalToggle(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -222,7 +241,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalInt(previous)} -> {OptionalFormatting.FormatOptionalInt(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -282,89 +301,47 @@ namespace ReplayLogger
 
         private bool TryGetZoteBossHp(out int value)
         {
-            return TryGetIntSetting("zoteBossHp", ref zoteBossHpField, ref zoteBossHpProperty, out value);
+            return ReflectionSettingLookup.TryGetInt(GetZoteHelperType(), "zoteBossHp", ref zoteBossHpField, ref zoteBossHpProperty, out value);
         }
 
         private bool TryGetZoteImmortal(out bool enabled)
         {
-            return TryGetBoolSetting("zoteImmortal", ref zoteImmortalField, ref zoteImmortalProperty, out enabled);
+            return ReflectionSettingLookup.TryGetBool(GetZoteHelperType(), "zoteImmortal", ref zoteImmortalField, ref zoteImmortalProperty, out enabled);
         }
 
         private bool TryGetZoteSpawnFlying(out bool enabled)
         {
-            return TryGetBoolSetting("zoteSpawnFlying", ref zoteSpawnFlyingField, ref zoteSpawnFlyingProperty, out enabled);
+            return ReflectionSettingLookup.TryGetBool(GetZoteHelperType(), "zoteSpawnFlying", ref zoteSpawnFlyingField, ref zoteSpawnFlyingProperty, out enabled);
         }
 
         private bool TryGetZoteSpawnHopping(out bool enabled)
         {
-            return TryGetBoolSetting("zoteSpawnHopping", ref zoteSpawnHoppingField, ref zoteSpawnHoppingProperty, out enabled);
+            return ReflectionSettingLookup.TryGetBool(GetZoteHelperType(), "zoteSpawnHopping", ref zoteSpawnHoppingField, ref zoteSpawnHoppingProperty, out enabled);
         }
 
         private bool TryGetZoteFlyingHp(out int value)
         {
-            return TryGetIntSetting("zoteSummonFlyingHp", ref zoteSummonFlyingHpField, ref zoteSummonFlyingHpProperty, out value);
+            return ReflectionSettingLookup.TryGetInt(GetZoteHelperType(), "zoteSummonFlyingHp", ref zoteSummonFlyingHpField, ref zoteSummonFlyingHpProperty, out value);
         }
 
         private bool TryGetZoteHoppingHp(out int value)
         {
-            return TryGetIntSetting("zoteSummonHoppingHp", ref zoteSummonHoppingHpField, ref zoteSummonHoppingHpProperty, out value);
+            return ReflectionSettingLookup.TryGetInt(GetZoteHelperType(), "zoteSummonHoppingHp", ref zoteSummonHoppingHpField, ref zoteSummonHoppingHpProperty, out value);
         }
 
         private bool TryGetZoteSummonLimit(out int value)
         {
-            return TryGetIntSetting("zoteSummonLimit", ref zoteSummonLimitField, ref zoteSummonLimitProperty, out value);
+            return ReflectionSettingLookup.TryGetInt(GetZoteHelperType(), "zoteSummonLimit", ref zoteSummonLimitField, ref zoteSummonLimitProperty, out value);
         }
 
-        private bool TryGetSummonLimitInGame(out int value)
+        private bool TryGetZoteDoubleSummons(out bool enabled)
         {
-            value = 0;
-            if (!TryGetZoteSummonLimit(out value))
-            {
-                return false;
-            }
-
-            if (!IsZoteSceneActive())
-            {
-                return false;
-            }
-
-            if (TryGetModuleActive(out bool active) && !active)
-            {
-                return false;
-            }
-
-            return true;
+            return ReflectionSettingLookup.TryGetBool(GetZoteHelperType(), "zoteDoubleSummons", ref zoteDoubleSummonsField, ref zoteDoubleSummonsProperty, out enabled);
         }
 
-        private bool TryGetModuleActive(out bool active)
+        private bool TryGetZoteSummonOnlyOnStart(out bool enabled)
         {
-            active = false;
-            Type type = GetZoteHelperType();
-            if (type == null)
-            {
-                return false;
-            }
-
-            if (moduleActiveField == null)
-            {
-                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-                moduleActiveField = type.GetField("moduleActive", flags);
-            }
-
-            try
-            {
-                object raw = moduleActiveField?.GetCachedValue(null);
-                if (raw is bool flag)
-                {
-                    active = flag;
-                    return true;
-                }
-            }
-            catch
-            {
-            }
-
-            return false;
+            return ReflectionSettingLookup.TryGetBool(GetZoteHelperType(), "zoteAttackSummonsOnlyOnStart", ref zoteSummonOnlyOnStartField, ref zoteSummonOnlyOnStartProperty, out enabled);
         }
 
         private bool TryGetGpzEnterType(out string value)
@@ -407,95 +384,6 @@ namespace ReplayLogger
             return false;
         }
 
-        private bool TryGetBoolSetting(string fieldName, ref FieldInfo field, ref PropertyInfo property, out bool enabled)
-        {
-            enabled = false;
-            Type type = GetZoteHelperType();
-            if (type == null)
-            {
-                return false;
-            }
-
-            if (field == null && property == null)
-            {
-                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-                field = type.GetField(fieldName, flags);
-                if (field == null)
-                {
-                    property = type.GetProperty(fieldName, flags);
-                }
-            }
-
-            try
-            {
-                object raw = property != null
-                    ? property.GetCachedValue(null)
-                    : field?.GetCachedValue(null);
-
-                if (raw is bool flag)
-                {
-                    enabled = flag;
-                    return true;
-                }
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
-        private bool TryGetIntSetting(string fieldName, ref FieldInfo field, ref PropertyInfo property, out int value)
-        {
-            value = 0;
-            Type type = GetZoteHelperType();
-            if (type == null)
-            {
-                return false;
-            }
-
-            if (field == null && property == null)
-            {
-                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-                field = type.GetField(fieldName, flags);
-                if (field == null)
-                {
-                    property = type.GetProperty(fieldName, flags);
-                }
-            }
-
-            try
-            {
-                object raw = property != null
-                    ? property.GetCachedValue(null)
-                    : field?.GetCachedValue(null);
-
-                if (raw == null)
-                {
-                    return false;
-                }
-
-                value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
-                return true;
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
-        private bool IsZoteSceneActive()
-        {
-            string sceneName = GameManager.instance?.sceneName;
-            if (string.IsNullOrEmpty(sceneName))
-            {
-                sceneName = currentArenaName;
-            }
-
-            return string.Equals(sceneName, ZoteSceneName, StringComparison.Ordinal);
-        }
-
         private IDictionary GetModuleMap()
         {
             Type type = GetModuleManagerType();
@@ -535,7 +423,7 @@ namespace ReplayLogger
         {
             if (!moduleManagerResolved)
             {
-                moduleManagerType = FindType("GodhomeQoL.ModuleManager");
+                moduleManagerType = TypeLookup.FindType("GodhomeQoL.ModuleManager");
                 moduleManagerResolved = true;
             }
 
@@ -546,7 +434,7 @@ namespace ReplayLogger
         {
             if (!zoteHelperResolved)
             {
-                zoteHelperType = FindType("GodhomeQoL.Modules.BossChallenge.ZoteHelper");
+                zoteHelperType = TypeLookup.FindType("GodhomeQoL.Modules.BossChallenge.ZoteHelper");
                 zoteHelperResolved = true;
             }
 
@@ -557,37 +445,16 @@ namespace ReplayLogger
         {
             if (!forceEnterTypeResolved)
             {
-                forceEnterTypeType = FindType("GodhomeQoL.Modules.BossChallenge.ForceGreyPrinceEnterType");
+                forceEnterTypeType = TypeLookup.FindType("GodhomeQoL.Modules.BossChallenge.ForceGreyPrinceEnterType");
                 forceEnterTypeResolved = true;
             }
 
             return forceEnterTypeType;
         }
 
-        private static Type FindType(string fullName)
+        private static bool IsGreyPrinceZoteArena(string arenaName)
         {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
-        }
-
-        private static string FormatOptionalToggle(Optional<bool> value)
-        {
-            return value.HasValue ? FormatToggle(value.Value) : "N/A";
-        }
-
-        private static string FormatOptionalInt(Optional<int> value)
-        {
-            return value.HasValue
-                ? value.Value.ToString(CultureInfo.InvariantCulture)
-                : "N/A";
+            return string.Equals(arenaName, GreyPrinceZoteArena, StringComparison.Ordinal);
         }
 
         private static string FormatOptionalString(Optional<string> value)
@@ -596,8 +463,6 @@ namespace ReplayLogger
                 ? value.Value
                 : "N/A";
         }
-
-        private static string FormatToggle(bool value) => value ? "On" : "Off";
 
         private readonly struct ZoteHelperState
         {
@@ -610,7 +475,8 @@ namespace ReplayLogger
                 Optional<int> zoteFlyingHp,
                 Optional<int> zoteHoppingHp,
                 Optional<int> zoteSummonLimit,
-                Optional<int> zoteSummonLimitInGame,
+                Optional<bool> doubleSummons,
+                Optional<bool> summonOnlyOnStart,
                 Optional<string> gpzEnterType)
             {
                 ModuleEnabled = moduleEnabled;
@@ -621,7 +487,8 @@ namespace ReplayLogger
                 ZoteFlyingHp = zoteFlyingHp;
                 ZoteHoppingHp = zoteHoppingHp;
                 ZoteSummonLimit = zoteSummonLimit;
-                ZoteSummonLimitInGame = zoteSummonLimitInGame;
+                DoubleSummons = doubleSummons;
+                SummonOnlyOnStart = summonOnlyOnStart;
                 GpzEnterType = gpzEnterType;
             }
 
@@ -633,7 +500,8 @@ namespace ReplayLogger
             internal Optional<int> ZoteFlyingHp { get; }
             internal Optional<int> ZoteHoppingHp { get; }
             internal Optional<int> ZoteSummonLimit { get; }
-            internal Optional<int> ZoteSummonLimitInGame { get; }
+            internal Optional<bool> DoubleSummons { get; }
+            internal Optional<bool> SummonOnlyOnStart { get; }
             internal Optional<string> GpzEnterType { get; }
         }
     }

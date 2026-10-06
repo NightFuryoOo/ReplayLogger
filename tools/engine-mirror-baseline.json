@@ -1,0 +1,186 @@
+{
+  "AppendActiveInvDurationWarning": {
+    "Pantheon": "d01cafd15661fdf5",
+    "HoG": "72cb7e60398dd6ec"
+  },
+  "AppendHeroBoxOffDurationWarning": {
+    "Pantheon": "e767dee280797d3a",
+    "HoG": "583072b5f42dbe5d"
+  },
+  "BuildHeroBoxHpInfo": {
+    "Pantheon": "3b7e64137f1a3614",
+    "HoG": "d225720ba661ae3b"
+  },
+  "BuildTrackedHpInfo": {
+    "Pantheon": "f1df08787515ea1e",
+    "HoG": "857c36247c457a62"
+  },
+  "CallMethodProper_OnEnter": {
+    "Pantheon": "ac56c2f4d8a42568",
+    "HoG": "16cf08e20dfd1bff"
+  },
+  "CallMethod_OnEnter": {
+    "Pantheon": "ac56c2f4d8a42568",
+    "HoG": "16cf08e20dfd1bff"
+  },
+  "CharmDamageIntOperator_OnEnter": {
+    "Pantheon": "684eb0b0afc8a615",
+    "HoG": "bb5dfb55aceeebad"
+  },
+  "DamageEffectTicker_Update": {
+    "Pantheon": "b404f815b7b62aea",
+    "HoG": "da26f7cae45329d7"
+  },
+  "DamageEnemies_DoDamage": {
+    "Pantheon": "bdc8c7b913fcba4c",
+    "HoG": "3e3659d13a1d37e3"
+  },
+  "DebugKillAllDetour": {
+    "Pantheon": "f7a9ce34e592e91d",
+    "HoG": "3ebc35b8eebb9a90"
+  },
+  "DebugKillSelfDetour": {
+    "Pantheon": "c8501259ebc5e9fc",
+    "HoG": "a9bb52e789c4deee"
+  },
+  "EnemyDreamnailReaction_RecieveDreamImpact": {
+    "Pantheon": "cebf0083c3923c49",
+    "HoG": "cb2cd0850b26104e"
+  },
+  "EnemyUpdate": {
+    "Pantheon": "3e7cac4836410556",
+    "HoG": "61403c5c05d80151"
+  },
+  "ExtraDamageable_RecieveExtraDamage": {
+    "Pantheon": "9485f2ca6c2d3236",
+    "HoG": "11486a693d91da89"
+  },
+  "HealthManager_TakeDamage": {
+    "Pantheon": "f43cd44573b4c1f2",
+    "HoG": "c1de7c2400b955f8"
+  },
+  "HeroController_FixedUpdate": {
+    "Pantheon": "70d8fcdda6a6f108",
+    "HoG": "63e1afed696cacdb"
+  },
+  "HeroController_SoulGain": {
+    "Pantheon": "a32a67a61fbf257f",
+    "HoG": "ec3a1e7e500c0057"
+  },
+  "HeroController_TakeDamage": {
+    "Pantheon": "5d54b997036ed455",
+    "HoG": "f5c193380a4d2712"
+  },
+  "HitTaker_Hit": {
+    "Pantheon": "d7f3dff7cb5b3b2f",
+    "HoG": "bb088844843064ca"
+  },
+  "IncludeEnemyLayer": {
+    "Pantheon": "b61d4c832f9d39ee",
+    "HoG": "b61d4c832f9d39ee"
+  },
+  "InitializeDebugModHooks": {
+    "Pantheon": "3e81edf15685f1bf",
+    "HoG": "5d509ecc01bbccb3"
+  },
+  "InvCheck": {
+    "Pantheon": "f5ba646259d232d0",
+    "HoG": "488474dc0c04a1a2"
+  },
+  "ModHooks_AfterTakeDamageHook": {
+    "Pantheon": "7cfe3b9e08cbba1e",
+    "HoG": "0907fab9f1f66365"
+  },
+  "ModHooks_BeforePlayerDeadHook": {
+    "Pantheon": "575de95ab639932e",
+    "HoG": "0b59e6af3196434f"
+  },
+  "ModHooks_HitInstanceHook": {
+    "Pantheon": "308a6077533ea771",
+    "HoG": "f2685bd78ce4da9b"
+  },
+  "MonitorDebugModUi": {
+    "Pantheon": "efb0de2fd61a0e80",
+    "HoG": "802c08edd00740a2"
+  },
+  "PlayMakerFSM_SendEvent": {
+    "Pantheon": "43d09de82050e089",
+    "HoG": "e69dabb17061fa50"
+  },
+  "PlayerData_AddMPCharge": {
+    "Pantheon": "21996924c0c64e6f",
+    "HoG": "a3e66cc701426101"
+  },
+  "PlayerData_TakeMP": {
+    "Pantheon": "eefb6fad23b3448c",
+    "HoG": "d642798cb1c6d96a"
+  },
+  "PlayerData_TakeReserveMP": {
+    "Pantheon": "e403fc79fbccb6cc",
+    "HoG": "adc11049c220d44a"
+  },
+  "QuitToMenu_Start": {
+    "Pantheon": "5588514bbca770ce",
+    "HoG": "f38fec63d591483a"
+  },
+  "ResolveEnemyHealthManager": {
+    "Pantheon": "607811111336bae8",
+    "HoG": "569fc0de6e04bb0b"
+  },
+  "ResolveEnemyLayerMask": {
+    "Pantheon": "6aaa01d5a38ac12b",
+    "HoG": "e1689d1b79946bca"
+  },
+  "ResolveMainSpendSourceLabel": {
+    "Pantheon": "04e9360fb3f21aad",
+    "HoG": "04e9360fb3f21aad"
+  },
+  "ResolveSpellCastName": {
+    "Pantheon": "24a9f3527aad83b8",
+    "HoG": "24a9f3527aad83b8"
+  },
+  "SceneLoad_RecordEndTime": {
+    "Pantheon": "7663f0f4433daff7",
+    "HoG": "9307da5c65fa74ab"
+  },
+  "SeedTrackedBossesFromActiveScene": {
+    "Pantheon": "af044f54de871c5b",
+    "HoG": "f93214b1ff5802af"
+  },
+  "SendExtraDamage_OnEnter": {
+    "Pantheon": "1e2ab0ca3110cee7",
+    "HoG": "962096703e2c76a0"
+  },
+  "SendMessage_OnEnter": {
+    "Pantheon": "2c89912c169f1f7d",
+    "HoG": "3cfb2f127af73cb2"
+  },
+  "SpellFluke_DoDamage": {
+    "Pantheon": "fbfd4a63c3f213e9",
+    "HoG": "27e2da2739342940"
+  },
+  "TrackEnemyHealthManager": {
+    "Pantheon": "80409ae1be66c48a",
+    "HoG": "cc87c047af8725af"
+  },
+  "TrackFsmSoulCall": {
+    "Pantheon": "3b789d090b080535",
+    "HoG": "3b789d090b080535"
+  },
+  "TrackHeroBoxActive": {
+    "Pantheon": "8f631acaa3955249",
+    "HoG": "8f631acaa3955249"
+  },
+  "TryLogTrackedBossHpDelta": {
+    "Pantheon": "f0429f7424fff8c2",
+    "HoG": "37ba810953acb011"
+  },
+  "TryResolveHitTargetHealthManager": {
+    "Pantheon": "c688c3d19bbf7f03",
+    "HoG": "44f3af159b871227"
+  },
+  "WriteHeroBoxActiveWarning": {
+    "Pantheon": "89cc0bad3e242e69",
+    "HoG": "eeb3fa6cf2b6d15f"
+  }
+}

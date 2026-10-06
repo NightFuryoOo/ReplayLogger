@@ -1,22 +1,23 @@
-﻿using System.Diagnostics;
+using Modding;
 
 namespace ReplayLogger
 {
+
     internal static class InternalDiagnostics
     {
-        [Conditional("REPLAYLOGGER_INTERNAL_DIAGNOSTICS")]
         internal static void Info(string message)
         {
+            Logger.Log(message);
         }
 
-        [Conditional("REPLAYLOGGER_INTERNAL_DIAGNOSTICS")]
         internal static void Warn(string message)
         {
+            Logger.LogWarn(message);
         }
 
-        [Conditional("REPLAYLOGGER_INTERNAL_DIAGNOSTICS")]
         internal static void Error(string message)
         {
+            Logger.LogError(message);
         }
     }
 }

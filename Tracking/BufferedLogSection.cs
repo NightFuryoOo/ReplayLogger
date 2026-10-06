@@ -124,8 +124,9 @@ namespace ReplayLogger
                 }
                 lastFlushTickMs = nowMs;
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to spill buffered log section to disk ('{tempPath}'); already-dequeued lines were lost: {ex.Message}");
                 CloseTempAppendWriter();
                 tempDirectoryReady = false;
             }
@@ -172,7 +173,7 @@ namespace ReplayLogger
             }
 
             Flush();
-            // Ensure read access is not blocked by our own append handle.
+
             CloseTempAppendWriter();
 
             if (!hasPersistedContent || string.IsNullOrEmpty(tempPath))
@@ -207,8 +208,9 @@ namespace ReplayLogger
                     TempObjectPools.ReturnStringList(batch);
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to read back spilled log section ('{tempPath}') into the final log; its content was not written: {ex.Message}");
                 hasPersistedContent = false;
                 CloseTempAppendWriter();
             }
@@ -234,9 +236,9 @@ namespace ReplayLogger
                     File.Delete(tempPath);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to delete temp log section file '{tempPath}' (harmless, but it will be left behind): {ex.Message}");
             }
         }
 
@@ -276,16 +278,18 @@ namespace ReplayLogger
             {
                 writerToDispose.Flush();
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to flush temp log section writer ('{tempPath}'); its last unflushed lines may be lost: {ex.Message}");
             }
 
             try
             {
                 writerToDispose.Dispose();
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to dispose temp log section writer ('{tempPath}'): {ex.Message}");
             }
         }
 

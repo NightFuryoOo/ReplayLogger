@@ -86,15 +86,8 @@ namespace ReplayLogger
 
             try
             {
-                foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    randomPantheonsType ??= asm.GetType(RandomPantheonsTypeName, throwOnError: false);
-                    trueBossRushType ??= asm.GetType(TrueBossRushTypeName, throwOnError: false);
-                    if (randomPantheonsType != null && trueBossRushType != null)
-                    {
-                        break;
-                    }
-                }
+                randomPantheonsType ??= TypeLookup.FindType(RandomPantheonsTypeName);
+                trueBossRushType ??= TypeLookup.FindType(TrueBossRushTypeName);
 
                 const BindingFlags staticFlags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
                 if (randomPantheonsType != null)

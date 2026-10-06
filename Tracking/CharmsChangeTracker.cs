@@ -11,6 +11,7 @@ namespace ReplayLogger
         private readonly HashSet<int> currentBuffer = new();
         private readonly List<string> changes = new();
         private readonly List<string> inlineEvents = new();
+        private bool overcharmedState;
 
         public IReadOnlyList<string> Changes => changes;
         public IReadOnlyList<string> InlineEvents => inlineEvents;
@@ -61,6 +62,16 @@ namespace ReplayLogger
             {
                 equipped.Add(c);
             }
+
+            bool overcharmedNow = PlayerData.instance.overcharmed;
+            if (overcharmedNow != overcharmedState)
+            {
+                long delta = nowUnixTime - lastUnixTime;
+                string action = overcharmedNow ? "Overcharmed ON" : "Overcharmed OFF";
+                changes.Add($"|{arenaName ?? "UnknownArena"}|+{delta}|{action}");
+                LogInline(writer, arenaName, delta, action);
+                overcharmedState = overcharmedNow;
+            }
         }
 
         public void Write(StreamWriter writer, string separator = "---------------------------------------------------")
@@ -110,11 +121,13 @@ namespace ReplayLogger
                     equipped.Add(c);
                 }
             }
+
+            overcharmedState = PlayerData.instance != null && PlayerData.instance.overcharmed;
         }
 
         private void LogInline(StreamWriter writer, string arenaName, long delta, string action)
         {
-            string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string arena = ArenaNormalization.NormalizeStrict(arenaName);
             string entry = $"Charms|{arena}|+{delta}|{action}";
             inlineEvents.Add(entry);
         }

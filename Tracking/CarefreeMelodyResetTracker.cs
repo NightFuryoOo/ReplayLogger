@@ -42,7 +42,7 @@ namespace ReplayLogger
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
-            currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
+            currentArenaName = ArenaNormalization.NormalizeLenient(arenaName);
             currentBaseUnixTime = baseUnixTime;
             long now = baseUnixTime;
 
@@ -66,7 +66,7 @@ namespace ReplayLogger
             }
 
             LogFieldChange("Carefree Melody Reset", currentState.ModuleEnabled, snapshot.ModuleEnabled, now);
-            LogFieldChange("Hits Since Shielded (In-Game)", currentState.HitsSinceShielded, snapshot.HitsSinceShielded, now);
+            LogFieldChange("Hits Since Shielded", currentState.HitsSinceShielded, snapshot.HitsSinceShielded, now);
             currentState = snapshot;
         }
 
@@ -94,7 +94,7 @@ namespace ReplayLogger
 
             long now = nowUnixTime;
             LogFieldChange("Carefree Melody Reset", currentState.ModuleEnabled, snapshot.ModuleEnabled, now);
-            LogFieldChange("Hits Since Shielded (In-Game)", currentState.HitsSinceShielded, snapshot.HitsSinceShielded, now);
+            LogFieldChange("Hits Since Shielded", currentState.HitsSinceShielded, snapshot.HitsSinceShielded, now);
             currentState = snapshot;
         }
 
@@ -117,8 +117,8 @@ namespace ReplayLogger
             }
             LogWrite.EncryptedLine(writer, "    State:");
 
-            LogWrite.EncryptedLine(writer, $"      Carefree Melody Reset: {FormatOptionalToggle(initialState.ModuleEnabled)}");
-            LogWrite.EncryptedLine(writer, $"      Hits Since Shielded (In-Game): {FormatOptionalInt(initialState.HitsSinceShielded)}");
+            LogWrite.EncryptedLine(writer, $"      Carefree Melody Reset: {OptionalFormatting.FormatOptionalToggle(initialState.ModuleEnabled)}");
+            LogWrite.EncryptedLine(writer, $"      Hits Since Shielded: {OptionalFormatting.FormatOptionalInt(initialState.HitsSinceShielded)}");
 
             LogWrite.EncryptedLine(writer, "    Changes:");
             if (changes.Count == 0)
@@ -151,7 +151,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalToggle(previous)} -> {OptionalFormatting.FormatOptionalToggle(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -163,7 +163,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalInt(previous)} -> {OptionalFormatting.FormatOptionalInt(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -292,47 +292,19 @@ namespace ReplayLogger
 
         private Type GetModuleType()
         {
-            return FindType("GodhomeQoL.Modules.QoL.CarefreeMelodyReset");
+            return TypeLookup.FindType("GodhomeQoL.Modules.QoL.CarefreeMelodyReset");
         }
 
         private Type GetModuleManagerType()
         {
             if (!moduleManagerResolved)
             {
-                moduleManagerType = FindType("GodhomeQoL.ModuleManager");
+                moduleManagerType = TypeLookup.FindType("GodhomeQoL.ModuleManager");
                 moduleManagerResolved = true;
             }
 
             return moduleManagerType;
         }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
-        }
-
-        private static string FormatOptionalToggle(Optional<bool> value)
-        {
-            return value.HasValue ? FormatToggle(value.Value) : "N/A";
-        }
-
-        private static string FormatOptionalInt(Optional<int> value)
-        {
-            return value.HasValue
-                ? value.Value.ToString(CultureInfo.InvariantCulture)
-                : "N/A";
-        }
-
-        private static string FormatToggle(bool value) => value ? "On" : "Off";
 
         private readonly struct CarefreeMelodyState
         {
