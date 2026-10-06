@@ -360,3 +360,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local log-structure reference (kept on disk, not versioned)
+docs/*-log-sample.txt

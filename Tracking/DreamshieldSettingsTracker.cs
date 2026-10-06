@@ -20,9 +20,8 @@ namespace ReplayLogger
         private bool hasCurrentState;
         private readonly List<string> changes = new();
         private Optional<float> lastLoggedRotationDelay;
-        private Optional<float> lastLoggedRotationDelayInGame;
         private Optional<float> lastLoggedRotationSpeed;
-        private Optional<string> lastLoggedRotationAnglesInGame;
+        private Optional<string> lastLoggedRotationAngles;
 
         private Type dreamshieldType;
         private bool dreamshieldResolved;
@@ -61,14 +60,13 @@ namespace ReplayLogger
             fsmCacheSceneName = null;
             PlayMakerFsmSceneCache.Invalidate();
             lastLoggedRotationDelay = Optional<float>.None;
-            lastLoggedRotationDelayInGame = Optional<float>.None;
             lastLoggedRotationSpeed = Optional<float>.None;
-            lastLoggedRotationAnglesInGame = Optional<string>.None;
+            lastLoggedRotationAngles = Optional<string>.None;
         }
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
-            currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
+            currentArenaName = ArenaNormalization.NormalizeLenient(arenaName);
             currentBaseUnixTime = baseUnixTime;
             long now = baseUnixTime;
             dreamshieldControlFsm = null;
@@ -103,9 +101,7 @@ namespace ReplayLogger
             LogFieldChange("Dreamshield Start Angle", currentState.StartAngle, snapshot.StartAngle, now);
             LogFieldChange("Rotation Delay (sec)", currentState.RotationDelay, snapshot.RotationDelay, now);
             LogFieldChange("Rotation Speed Multiplier", currentState.RotationSpeed, snapshot.RotationSpeed, now);
-            LogFieldChange("Dreamshield Start Angle (In-Game)", currentState.StartAngleInGame, snapshot.StartAngleInGame, now);
-            LogFieldChange("Rotation Delay (In-Game)", currentState.RotationDelayInGame, snapshot.RotationDelayInGame, now);
-            LogFieldChange("Rotation Angles (In-Game)", currentState.RotationAnglesInGame, snapshot.RotationAnglesInGame, now);
+            LogFieldChange("Rotation Angles", currentState.RotationAngles, snapshot.RotationAngles, now);
 
             currentState = snapshot;
             UpdateSliderBaseline(snapshot);
@@ -136,7 +132,6 @@ namespace ReplayLogger
             }
 
             LogFieldChange("Dreamshield Start Angle", currentState.StartAngle, snapshot.StartAngle, now);
-            LogFieldChange("Dreamshield Start Angle (In-Game)", currentState.StartAngleInGame, snapshot.StartAngleInGame, now);
 
             LogSliderChanges(snapshot, now);
 
@@ -164,12 +159,10 @@ namespace ReplayLogger
                     batch.Add($"    Initial Arena: {initialArenaName}");
                 }
                 batch.Add("    State:");
-                batch.Add($"      Dreamshield Start Angle: {FormatOptionalToggle(initialState.StartAngle)}");
-                batch.Add($"      Rotation Delay (sec): {FormatOptionalFloat(initialState.RotationDelay)}");
-                batch.Add($"      Rotation Speed Multiplier: {FormatOptionalFloat(initialState.RotationSpeed)}");
-                batch.Add($"      Dreamshield Start Angle (In-Game): {FormatOptionalToggle(initialState.StartAngleInGame)}");
-                batch.Add($"      Rotation Delay (In-Game): {FormatOptionalFloat(initialState.RotationDelayInGame)}");
-                batch.Add($"      Rotation Angles (In-Game): {FormatOptionalString(initialState.RotationAnglesInGame)}");
+                batch.Add($"      Dreamshield Start Angle: {OptionalFormatting.FormatOptionalToggle(initialState.StartAngle)}");
+                batch.Add($"      Rotation Delay (sec): {OptionalFormatting.FormatOptionalFloat(initialState.RotationDelay)}");
+                batch.Add($"      Rotation Speed Multiplier: {OptionalFormatting.FormatOptionalFloat(initialState.RotationSpeed)}");
+                batch.Add($"      Rotation Angles: {FormatOptionalString(initialState.RotationAngles)}");
                 batch.Add("    Changes:");
                 if (changes.Count == 0)
                 {
@@ -198,36 +191,32 @@ namespace ReplayLogger
             bool hasSpeed = TryGetRotationSpeed(out float rotationSpeed);
 
             bool hasFsm = TryGetDreamshieldControlFsm(out PlayMakerFSM fsm, nowUnixTime);
-            bool startAngleInGame = hasFsm && hasStartAngle && startAngleEnabled;
+            bool tryReadAngles = hasFsm && hasStartAngle && startAngleEnabled;
 
-            Optional<string> inGameAngles = Optional<string>.None;
-            if (startAngleInGame && TryGetRotationAnglesInGame(fsm, out string angles) && !string.IsNullOrEmpty(angles))
+            Optional<string> liveAngles = Optional<string>.None;
+            if (tryReadAngles && TryGetRotationAngles(fsm, out string angles) && !string.IsNullOrEmpty(angles))
             {
-                inGameAngles = new Optional<string>(angles);
+                liveAngles = new Optional<string>(angles);
             }
 
             return new DreamshieldState(
                 hasStartAngle ? new Optional<bool>(startAngleEnabled) : Optional<bool>.None,
-                hasDelay ? new Optional<float>(NormalizeFloat(rotationDelay)) : Optional<float>.None,
-                hasSpeed ? new Optional<float>(NormalizeFloat(rotationSpeed)) : Optional<float>.None,
-                hasFsm && hasStartAngle ? new Optional<bool>(startAngleEnabled) : Optional<bool>.None,
-                startAngleInGame && hasDelay ? new Optional<float>(NormalizeFloat(rotationDelay)) : Optional<float>.None,
-                inGameAngles);
+                hasDelay ? new Optional<float>(OptionalFormatting.NormalizeFloat(rotationDelay)) : Optional<float>.None,
+                hasSpeed ? new Optional<float>(OptionalFormatting.NormalizeFloat(rotationSpeed)) : Optional<float>.None,
+                liveAngles);
         }
 
         private void LogSliderChanges(DreamshieldState snapshot, long now)
         {
             Optional<float> delayValue = snapshot.RotationDelay;
-            Optional<float> delayInGameValue = snapshot.RotationDelayInGame;
             Optional<float> speedValue = snapshot.RotationSpeed;
-            Optional<string> speedInGameValue = snapshot.RotationAnglesInGame;
+            Optional<string> anglesValue = snapshot.RotationAngles;
 
             bool delayChanged = delayValue != lastLoggedRotationDelay;
-            bool delayInGameChanged = delayInGameValue != lastLoggedRotationDelayInGame;
             bool speedChanged = speedValue != lastLoggedRotationSpeed;
-            bool speedInGameChanged = speedInGameValue != lastLoggedRotationAnglesInGame;
+            bool anglesChanged = anglesValue != lastLoggedRotationAngles;
 
-            if (!delayChanged && !delayInGameChanged && !speedChanged && !speedInGameChanged)
+            if (!delayChanged && !speedChanged && !anglesChanged)
             {
                 return;
             }
@@ -235,50 +224,39 @@ namespace ReplayLogger
             if (delayChanged)
             {
                 string descriptor = !lastLoggedRotationDelay.HasValue
-                    ? $"Rotation Delay (sec): {FormatOptionalFloat(delayValue)}"
-                    : $"Rotation Delay (sec): {FormatOptionalFloat(lastLoggedRotationDelay)} -> {FormatOptionalFloat(delayValue)}";
+                    ? $"Rotation Delay (sec): {OptionalFormatting.FormatOptionalFloat(delayValue)}"
+                    : $"Rotation Delay (sec): {OptionalFormatting.FormatOptionalFloat(lastLoggedRotationDelay)} -> {OptionalFormatting.FormatOptionalFloat(delayValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedRotationDelay = delayValue;
             }
 
-            if (delayInGameChanged)
-            {
-                string descriptor = !lastLoggedRotationDelayInGame.HasValue
-                    ? $"Rotation Delay (In-Game): {FormatOptionalFloat(delayInGameValue)}"
-                    : $"Rotation Delay (In-Game): {FormatOptionalFloat(lastLoggedRotationDelayInGame)} -> {FormatOptionalFloat(delayInGameValue)}";
-                long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
-                changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-                lastLoggedRotationDelayInGame = delayInGameValue;
-            }
-
             if (speedChanged)
             {
                 string descriptor = !lastLoggedRotationSpeed.HasValue
-                    ? $"Rotation Speed Multiplier: {FormatOptionalFloat(speedValue)}"
-                    : $"Rotation Speed Multiplier: {FormatOptionalFloat(lastLoggedRotationSpeed)} -> {FormatOptionalFloat(speedValue)}";
+                    ? $"Rotation Speed Multiplier: {OptionalFormatting.FormatOptionalFloat(speedValue)}"
+                    : $"Rotation Speed Multiplier: {OptionalFormatting.FormatOptionalFloat(lastLoggedRotationSpeed)} -> {OptionalFormatting.FormatOptionalFloat(speedValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
                 lastLoggedRotationSpeed = speedValue;
             }
 
-            if (speedInGameChanged)
+            if (anglesChanged)
             {
-                string descriptor = !lastLoggedRotationAnglesInGame.HasValue
-                    ? $"Rotation Angles (In-Game): {FormatOptionalString(speedInGameValue)}"
-                    : $"Rotation Angles (In-Game): {FormatOptionalString(lastLoggedRotationAnglesInGame)} -> {FormatOptionalString(speedInGameValue)}";
+                string descriptor = !lastLoggedRotationAngles.HasValue
+                    ? $"Rotation Angles: {FormatOptionalString(anglesValue)}"
+                    : $"Rotation Angles: {FormatOptionalString(lastLoggedRotationAngles)} -> {FormatOptionalString(anglesValue)}";
                 long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
                 changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-                lastLoggedRotationAnglesInGame = speedInGameValue;
+                lastLoggedRotationAngles = anglesValue;
             }
         }
 
         private void UpdateSliderBaseline(DreamshieldState snapshot)
         {
             lastLoggedRotationDelay = snapshot.RotationDelay;
-            lastLoggedRotationDelayInGame = snapshot.RotationDelayInGame;
             lastLoggedRotationSpeed = snapshot.RotationSpeed;
-            lastLoggedRotationAnglesInGame = snapshot.RotationAnglesInGame;
+            lastLoggedRotationAngles = snapshot.RotationAngles;
         }
 
         private void LogFieldChange(string key, Optional<bool> previous, Optional<bool> current, long now)
@@ -288,7 +266,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalToggle(previous)} -> {OptionalFormatting.FormatOptionalToggle(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -300,7 +278,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalFloat(previous)} -> {FormatOptionalFloat(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalFloat(previous)} -> {OptionalFormatting.FormatOptionalFloat(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -317,23 +295,6 @@ namespace ReplayLogger
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
 
-        private static float NormalizeFloat(float value)
-        {
-            return (float)Math.Round(value, 2, MidpointRounding.ToEven);
-        }
-
-        private static string FormatOptionalToggle(Optional<bool> value)
-        {
-            return value.HasValue ? FormatToggle(value.Value) : "N/A";
-        }
-
-        private static string FormatOptionalFloat(Optional<float> value)
-        {
-            return value.HasValue
-                ? value.Value.ToString("0.##", CultureInfo.InvariantCulture)
-                : "N/A";
-        }
-
         private static string FormatOptionalString(Optional<string> value)
         {
             return value.HasValue && !string.IsNullOrEmpty(value.Value)
@@ -347,42 +308,36 @@ namespace ReplayLogger
                 Optional<bool> startAngle,
                 Optional<float> rotationDelay,
                 Optional<float> rotationSpeed,
-                Optional<bool> startAngleInGame,
-                Optional<float> rotationDelayInGame,
-                Optional<string> rotationAnglesInGame)
+                Optional<string> rotationAngles)
             {
                 StartAngle = startAngle;
                 RotationDelay = rotationDelay;
                 RotationSpeed = rotationSpeed;
-                StartAngleInGame = startAngleInGame;
-                RotationDelayInGame = rotationDelayInGame;
-                RotationAnglesInGame = rotationAnglesInGame;
+                RotationAngles = rotationAngles;
             }
 
             internal Optional<bool> StartAngle { get; }
             internal Optional<float> RotationDelay { get; }
             internal Optional<float> RotationSpeed { get; }
-            internal Optional<bool> StartAngleInGame { get; }
-            internal Optional<float> RotationDelayInGame { get; }
-            internal Optional<string> RotationAnglesInGame { get; }
+            internal Optional<string> RotationAngles { get; }
         }
 
         private bool TryGetStartAngleEnabled(out bool enabled)
         {
-            return TryGetBoolSetting("startAngleEnabled", "StartAngleEnabled", ref startAngleEnabledField, ref startAngleEnabledProperty, out enabled);
+            return ReflectionSettingLookup.TryGetBool(GetDreamshieldType(), "startAngleEnabled", "StartAngleEnabled", ref startAngleEnabledField, ref startAngleEnabledProperty, out enabled);
         }
 
         private bool TryGetRotationDelay(out float delay)
         {
-            return TryGetFloatSetting("rotationDelay", "RotationDelay", ref rotationDelayField, ref rotationDelayProperty, out delay);
+            return ReflectionSettingLookup.TryGetFloat(GetDreamshieldType(), "rotationDelay", "RotationDelay", ref rotationDelayField, ref rotationDelayProperty, out delay);
         }
 
         private bool TryGetRotationSpeed(out float speed)
         {
-            return TryGetFloatSetting("rotationSpeed", "RotationSpeed", ref rotationSpeedField, ref rotationSpeedProperty, out speed);
+            return ReflectionSettingLookup.TryGetFloat(GetDreamshieldType(), "rotationSpeed", "RotationSpeed", ref rotationSpeedField, ref rotationSpeedProperty, out speed);
         }
 
-        private bool TryGetRotationAnglesInGame(PlayMakerFSM fsm, out string angles)
+        private bool TryGetRotationAngles(PlayMakerFSM fsm, out string angles)
         {
             angles = null;
             if (fsm == null)
@@ -606,107 +561,15 @@ namespace ReplayLogger
             return PlayMakerFsmSceneCache.Get(forceRefresh);
         }
 
-        private bool TryGetBoolSetting(string primaryName, string altName, ref FieldInfo field, ref PropertyInfo property, out bool enabled)
-        {
-            enabled = false;
-            Type type = GetDreamshieldType();
-            if (type == null)
-            {
-                return false;
-            }
-
-            if (field == null && property == null)
-            {
-                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-                field = type.GetField(primaryName, flags) ?? type.GetField(altName, flags);
-                if (field == null)
-                {
-                    property = type.GetProperty(primaryName, flags) ?? type.GetProperty(altName, flags);
-                }
-            }
-
-            try
-            {
-                object raw = property != null
-                    ? property.GetCachedValue(null)
-                    : field?.GetCachedValue(null);
-
-                if (raw is bool flag)
-                {
-                    enabled = flag;
-                    return true;
-                }
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
-        private bool TryGetFloatSetting(string primaryName, string altName, ref FieldInfo field, ref PropertyInfo property, out float value)
-        {
-            value = 0f;
-            Type type = GetDreamshieldType();
-            if (type == null)
-            {
-                return false;
-            }
-
-            if (field == null && property == null)
-            {
-                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-                field = type.GetField(primaryName, flags) ?? type.GetField(altName, flags);
-                if (field == null)
-                {
-                    property = type.GetProperty(primaryName, flags) ?? type.GetProperty(altName, flags);
-                }
-            }
-
-            try
-            {
-                object raw = property != null
-                    ? property.GetCachedValue(null)
-                    : field?.GetCachedValue(null);
-
-                if (raw == null)
-                {
-                    return false;
-                }
-
-                value = Convert.ToSingle(raw, CultureInfo.InvariantCulture);
-                return true;
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
         private Type GetDreamshieldType()
         {
             if (!dreamshieldResolved)
             {
-                dreamshieldType = FindType("GodhomeQoL.Modules.QoL.DreamshieldStartAngle");
+                dreamshieldType = TypeLookup.FindType("GodhomeQoL.Modules.QoL.DreamshieldStartAngle");
                 dreamshieldResolved = true;
             }
 
             return dreamshieldType;
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
 
         private static float GetRotateFloat(Rotate rotate, string fieldName)
@@ -741,7 +604,5 @@ namespace ReplayLogger
 
             return 0f;
         }
-
-        private static string FormatToggle(bool value) => value ? "On" : "Off";
     }
 }

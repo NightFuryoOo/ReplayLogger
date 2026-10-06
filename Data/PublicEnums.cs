@@ -124,7 +124,7 @@ public static class Panteons
     "GG_Hollow_Knight",
     "GG_Radiance"
 };
-   
+
 }
 public enum Charm
 {

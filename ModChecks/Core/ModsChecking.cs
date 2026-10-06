@@ -314,8 +314,9 @@ namespace ReplayLogger
                 {
                     references = owner.GetReferencedAssemblies();
                 }
-                catch
+                catch (Exception ex)
                 {
+                    global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not read referenced assemblies of '{owner.FullName}' while walking mod dependencies: {ex.Message}");
                     continue;
                 }
 
@@ -369,8 +370,9 @@ namespace ReplayLogger
                         return entry.Value;
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not compare loaded assembly '{entry.Key}' against reference '{reference?.Name}': {ex.Message}");
                 }
             }
 
@@ -409,8 +411,9 @@ namespace ReplayLogger
                     return name.Trim();
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: mod.GetName() threw for '{mod.GetType().Name}', falling back to its type name: {ex.Message}");
             }
 
             return mod.GetType().Name;
@@ -426,8 +429,9 @@ namespace ReplayLogger
                     return version.Trim();
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: mod.GetVersion() threw for '{mod.GetType().Name}', falling back to file metadata: {ex.Message}");
             }
 
             return ResolveModVersion(null, assemblyPath);
@@ -440,8 +444,9 @@ namespace ReplayLogger
                 string location = assembly?.Location;
                 return string.IsNullOrWhiteSpace(location) ? null : Path.GetFullPath(location);
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Info($"ReplayLogger: could not resolve on-disk path for assembly '{assembly?.FullName}' (likely dynamically generated, not necessarily a problem): {ex.Message}");
                 return null;
             }
         }
@@ -459,8 +464,9 @@ namespace ReplayLogger
                 string candidate = Path.GetFullPath(filePath);
                 return candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not compare path '{filePath}' against directory '{directory}': {ex.Message}");
                 return false;
             }
         }
@@ -698,6 +704,11 @@ namespace ReplayLogger
                     return true;
                 }
 
+                if (IsSfCoreSettingsModBase(current))
+                {
+                    return true;
+                }
+
                 TypeDefinition resolved = SafeResolve(current);
                 if (resolved == null)
                 {
@@ -715,6 +726,21 @@ namespace ReplayLogger
             return false;
         }
 
+        // SFCore's settings base classes derive from Modding.Mod. Pale Court is built against an older SFCore than
+        // the installed one, so the reference often cannot be resolved; recognise the base by name instead.
+        private static bool IsSfCoreSettingsModBase(TypeReference type)
+        {
+            if (type == null || !string.Equals(type.Namespace, "SFCore.Generics", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string name = type.Name ?? string.Empty;
+            return name.StartsWith("FullSettingsMod", StringComparison.Ordinal)
+                   || name.StartsWith("SaveSettingsMod", StringComparison.Ordinal)
+                   || name.StartsWith("GlobalSettingsMod", StringComparison.Ordinal);
+        }
+
         private static TypeDefinition SafeResolve(TypeReference type)
         {
             if (type == null)
@@ -726,8 +752,9 @@ namespace ReplayLogger
             {
                 return type.Resolve();
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not resolve type reference '{type.FullName}' while checking for IMod implementations: {ex.Message}");
                 return null;
             }
         }
@@ -765,8 +792,9 @@ namespace ReplayLogger
                 string joined = string.Join("\n", entries);
                 return ComputeSha256Hex(joined);
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to build mods-directory fingerprint for '{modsDir}'; the mod snapshot cache will not be usable this pass: {ex.Message}");
                 return null;
             }
         }
@@ -817,8 +845,9 @@ namespace ReplayLogger
                 byte[] hash = sha.ComputeHash(buffer, 0, offset);
                 return BitConverter.ToString(hash).Replace("-", string.Empty);
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to compute mini-hash for '{filePath}': {ex.Message}");
                 return string.Empty;
             }
         }
@@ -837,8 +866,9 @@ namespace ReplayLogger
             {
                 fullPath = Path.GetFullPath(dllPath);
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not resolve full path for '{dllPath}', using it as-is: {ex.Message}");
                 fullPath = dllPath;
             }
 
@@ -854,8 +884,9 @@ namespace ReplayLogger
                 signature = $"{info.Length}|{info.LastWriteTimeUtc.Ticks}|{miniHash}";
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: failed to compute DLL signature for '{fullPath}': {ex.Message}");
                 return false;
             }
         }
@@ -893,8 +924,9 @@ namespace ReplayLogger
 
                 return dllCandidates.Count > 0;
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not list DLL files in mod directory '{modDirectory}': {ex.Message}");
                 return false;
             }
         }
@@ -983,8 +1015,9 @@ namespace ReplayLogger
                 };
                 return hash;
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to compute SHA256 for '{filePath}'; this mod's entry in the log will have an empty hash: {ex.Message}");
                 return null;
             }
         }
@@ -1015,8 +1048,9 @@ namespace ReplayLogger
                     return asmVersion.ToString();
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Info($"ReplayLogger: could not read assembly version for '{filePath}', trying file version info next: {ex.Message}");
             }
 
             try
@@ -1031,8 +1065,9 @@ namespace ReplayLogger
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Info($"ReplayLogger: could not read file version info for '{filePath}', will record its version as \"Unknown\": {ex.Message}");
             }
 
             return "Unknown";
@@ -1193,8 +1228,9 @@ namespace ReplayLogger
                 string fullPath = Path.GetFullPath(directory);
                 return string.Equals(fullPath, cachedPaleCourtInfo.DirectoryPath, StringComparison.OrdinalIgnoreCase);
             }
-            catch
+            catch (Exception ex)
             {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not compare directory '{directory}' against cached Pale Court directory: {ex.Message}");
                 return false;
             }
         }
@@ -1289,6 +1325,248 @@ namespace ReplayLogger
             return false;
         }
 
+        public static List<string> FindUnaccountedLoadedAssemblies(string modsDir)
+        {
+            List<string> result = new();
+            string managedDir = TryGetManagedDirectory(modsDir);
+
+            try
+            {
+                HashSet<string> knownAssemblyIdentities = new(StringComparer.Ordinal);
+                Queue<Assembly> pending = new();
+                HashSet<string> queued = new(StringComparer.Ordinal);
+
+                try
+                {
+                    IEnumerable<IMod> loadedMods = ModHooks.GetAllMods(onlyEnabled: true, allowLoadError: false);
+                    if (loadedMods != null)
+                    {
+                        foreach (IMod mod in loadedMods)
+                        {
+                            if (mod == null)
+                            {
+                                continue;
+                            }
+
+                            EnqueueKnownAssembly(mod.GetType().Assembly, knownAssemblyIdentities, pending, queued);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: FindUnaccountedLoadedAssemblies could not read the loaded-mods list: {ex.Message}");
+                }
+
+                EnqueueKnownAssembly(typeof(ModsChecking).Assembly, knownAssemblyIdentities, pending, queued);
+
+                Dictionary<string, Assembly> loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
+                    .Where(assembly => assembly != null && !string.IsNullOrWhiteSpace(assembly.FullName))
+                    .GroupBy(assembly => assembly.FullName, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+
+                while (pending.Count > 0)
+                {
+                    Assembly owner = pending.Dequeue();
+                    AssemblyName[] references;
+                    try
+                    {
+                        references = owner.GetReferencedAssemblies();
+                    }
+                    catch (Exception ex)
+                    {
+                        global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: FindUnaccountedLoadedAssemblies could not read references of '{owner.FullName}': {ex.Message}");
+                        continue;
+                    }
+
+                    foreach (AssemblyName reference in references)
+                    {
+                        Assembly dependency = FindLoadedAssembly(reference, loadedAssemblies);
+                        if (dependency != null)
+                        {
+                            EnqueueKnownAssembly(dependency, knownAssemblyIdentities, pending, queued);
+                        }
+                    }
+                }
+
+                foreach (Assembly candidate in AppDomain.CurrentDomain.GetAssemblies())
+                {
+
+                    if (candidate == null || candidate.IsDynamic)
+                    {
+                        continue;
+                    }
+
+                    string identity = candidate.FullName;
+                    if (string.IsNullOrWhiteSpace(identity) || knownAssemblyIdentities.Contains(identity))
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(candidate.GetName()?.Name, "MonoMod.Utils.GetManagedSizeHelper", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    string assemblyPath = TryGetAssemblyPath(candidate);
+                    if (IsDirectlyInsideManagedRoot(assemblyPath, managedDir))
+                    {
+                        continue;
+                    }
+
+                    string simpleName = candidate.GetName()?.Name ?? string.Empty;
+                    string version = candidate.GetName()?.Version?.ToString() ?? "Unknown";
+                    string descriptor = string.IsNullOrWhiteSpace(assemblyPath)
+                        ? ComputeInMemoryAssemblyFingerprint(candidate)
+                        : (CalculateSHA256Cached(assemblyPath, null) ?? "Unknown");
+
+                    result.Add($"{NormalizeModField(simpleName)}|{NormalizeModField(version)}|{descriptor}");
+                }
+            }
+            catch (Exception ex)
+            {
+                global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: FindUnaccountedLoadedAssemblies failed: {ex.Message}");
+            }
+
+            result.Sort(StringComparer.OrdinalIgnoreCase);
+            return result;
+        }
+
+        private static void EnqueueKnownAssembly(
+            Assembly assembly,
+            HashSet<string> knownAssemblyIdentities,
+            Queue<Assembly> pending,
+            HashSet<string> queued)
+        {
+            if (assembly == null)
+            {
+                return;
+            }
+
+            string identity = assembly.FullName;
+            if (string.IsNullOrWhiteSpace(identity))
+            {
+                return;
+            }
+
+            knownAssemblyIdentities.Add(identity);
+            if (queued.Add(identity))
+            {
+                pending.Enqueue(assembly);
+            }
+        }
+
+        private static string ComputeInMemoryAssemblyFingerprint(Assembly assembly)
+        {
+            if (assembly == null)
+            {
+                return "(loaded from memory, no file on disk, fingerprint unavailable)";
+            }
+
+            try
+            {
+                using MemoryStream buffer = new();
+                foreach (Module module in assembly.GetModules().OrderBy(m => m.Name, StringComparer.Ordinal))
+                {
+                    Type[] types;
+                    try
+                    {
+                        types = module.GetTypes();
+                    }
+                    catch (ReflectionTypeLoadException ex)
+                    {
+                        types = ex.Types.Where(t => t != null).ToArray();
+                    }
+
+                    foreach (Type type in types.OrderBy(t => t.FullName, StringComparer.Ordinal))
+                    {
+                        AppendUtf8(buffer, type.FullName ?? type.Name ?? string.Empty);
+
+                        const BindingFlags memberFlags = BindingFlags.Public | BindingFlags.NonPublic
+                            | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+                        IEnumerable<MethodBase> members = type.GetMethods(memberFlags)
+                            .Cast<MethodBase>()
+                            .Concat(type.GetConstructors(memberFlags))
+                            .OrderBy(m => m.Name, StringComparer.Ordinal)
+                            .ThenBy(m => m.MetadataToken);
+
+                        foreach (MethodBase method in members)
+                        {
+                            AppendUtf8(buffer, method.Name);
+
+                            byte[] il = null;
+                            try
+                            {
+                                il = method.GetMethodBody()?.GetILAsByteArray();
+                            }
+                            catch
+                            {
+
+                            }
+
+                            if (il != null && il.Length > 0)
+                            {
+                                buffer.Write(il, 0, il.Length);
+                            }
+                        }
+                    }
+                }
+
+                using SHA256 sha = SHA256.Create();
+                byte[] hash = sha.ComputeHash(buffer.ToArray());
+                return "structfp:" + BitConverter.ToString(hash).Replace("-", string.Empty);
+            }
+            catch (Exception ex)
+            {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not compute an in-memory fingerprint for assembly '{assembly.FullName}': {ex.Message}");
+                return "(loaded from memory, no file on disk, fingerprint failed)";
+            }
+        }
+
+        private static void AppendUtf8(MemoryStream buffer, string text)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(text ?? string.Empty);
+            buffer.Write(bytes, 0, bytes.Length);
+        }
+
+        private static string TryGetManagedDirectory(string modsDir)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(modsDir))
+                {
+                    return null;
+                }
+
+                return Directory.GetParent(modsDir)?.FullName;
+            }
+            catch (Exception ex)
+            {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not resolve the Managed directory from '{modsDir}': {ex.Message}");
+                return null;
+            }
+        }
+
+        private static bool IsDirectlyInsideManagedRoot(string assemblyPath, string managedDir)
+        {
+            if (string.IsNullOrWhiteSpace(assemblyPath) || string.IsNullOrWhiteSpace(managedDir))
+            {
+                return false;
+            }
+
+            try
+            {
+                string actualParent = Path.GetDirectoryName(Path.GetFullPath(assemblyPath));
+                string expectedParent = Path.GetFullPath(managedDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(actualParent?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), expectedParent, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                global::ReplayLogger.InternalDiagnostics.Warn($"ReplayLogger: could not compare assembly path '{assemblyPath}' against the Managed directory: {ex.Message}");
+                return false;
+            }
+        }
+
         private static bool IsTrackableModDirectory(string directory)
         {
             if (string.IsNullOrEmpty(directory))
@@ -1326,6 +1604,4 @@ namespace ReplayLogger
         }
     }
 }
-
-
 

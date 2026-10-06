@@ -10,9 +10,14 @@ namespace ReplayLogger
         private readonly DreamshieldSettingsTracker dreamshieldSettings = new();
         private readonly CarefreeMelodyResetTracker carefreeMelodyReset = new();
         private readonly BossChallengeSettingsTracker bossChallengeSettings = new();
-        private readonly GodhomeQolBossManipulateTracker bossManipulateSettings = new();
         private readonly GodhomeQolCheatsTracker cheatsSettings = new();
+        private readonly MaskDamageSettingsTracker maskDamageSettings = new();
         private readonly GearSwitcherSettingsTracker gearSwitcherSettings = new();
+        private readonly GameOptimizeSettingsTracker gameOptimizeSettings = new();
+
+        private readonly ZoteHelperSettingsTracker zoteHelperSettings = new();
+
+        private readonly GodhomeQolBossManipulateTracker bossManipulateSettings = new();
         private long lastUpdateTime;
         private int stablePollCount;
         private string lastArenaName;
@@ -29,9 +34,12 @@ namespace ReplayLogger
             dreamshieldSettings.Reset();
             carefreeMelodyReset.Reset();
             bossChallengeSettings.Reset();
-            bossManipulateSettings.Reset();
             cheatsSettings.Reset();
+            maskDamageSettings.Reset();
             gearSwitcherSettings.Reset();
+            gameOptimizeSettings.Reset();
+            zoteHelperSettings.Reset();
+            bossManipulateSettings.Reset();
             lastUpdateTime = 0;
             stablePollCount = 0;
             lastArenaName = null;
@@ -54,12 +62,20 @@ namespace ReplayLogger
             {
                 bossChallengeSettings.Reset();
             }
+            cheatsSettings.StartFight(arenaName, baseUnixTime);
+            maskDamageSettings.StartFight(arenaName, baseUnixTime);
+            gearSwitcherSettings.StartFight(arenaName, baseUnixTime);
+            gameOptimizeSettings.StartFight(arenaName, baseUnixTime);
             if (includeBossManipulate)
             {
+                zoteHelperSettings.StartFight(arenaName, baseUnixTime);
                 bossManipulateSettings.StartFight(arenaName, baseUnixTime);
             }
-            cheatsSettings.StartFight(arenaName, baseUnixTime);
-            gearSwitcherSettings.StartFight(arenaName, baseUnixTime);
+            else
+            {
+                zoteHelperSettings.Reset();
+                bossManipulateSettings.Reset();
+            }
             lastUpdateTime = 0;
             stablePollCount = 0;
             lastArenaName = arenaName;
@@ -92,12 +108,15 @@ namespace ReplayLogger
             {
                 bossChallengeSettings.Update(arenaName, now);
             }
+            cheatsSettings.Update(arenaName, now);
+            maskDamageSettings.Update(arenaName, now);
+            gearSwitcherSettings.Update(arenaName, now);
+            gameOptimizeSettings.Update(arenaName, now);
             if (includeBossManipulate)
             {
+                zoteHelperSettings.Update(arenaName, now);
                 bossManipulateSettings.Update(arenaName, now);
             }
-            cheatsSettings.Update(arenaName, now);
-            gearSwitcherSettings.Update(arenaName, now);
 
             if (debugUiVisible)
             {
@@ -107,6 +126,11 @@ namespace ReplayLogger
             {
                 stablePollCount = Math.Min(stablePollCount + 1, 1000);
             }
+        }
+
+        public void RecordObservedSoulGain(string arenaName, long lastUnixTime, long nowUnixTime, int mainGained, int reserveGained)
+        {
+            gearSwitcherSettings.RecordObservedSoulGain(arenaName, lastUnixTime, nowUnixTime, mainGained, reserveGained);
         }
 
         public void WriteSection(StreamWriter writer, string separator = "---------------------------------------------------")
@@ -120,9 +144,12 @@ namespace ReplayLogger
                 !dreamshieldSettings.HasData &&
                 !carefreeMelodyReset.HasData &&
                 !(includeBossChallenge && bossChallengeSettings.HasData) &&
-                !bossManipulateSettings.HasData &&
                 !cheatsSettings.HasData &&
-                !gearSwitcherSettings.HasData)
+                !maskDamageSettings.HasData &&
+                !gearSwitcherSettings.HasData &&
+                !gameOptimizeSettings.HasData &&
+                !(includeBossManipulate && zoteHelperSettings.HasData) &&
+                !(includeBossManipulate && bossManipulateSettings.HasData))
             {
                 return;
             }
@@ -177,7 +204,17 @@ namespace ReplayLogger
                     blocksWritten++;
                 }
 
-                if (bossManipulateSettings.HasData)
+                if (includeBossManipulate && zoteHelperSettings.HasData)
+                {
+                    if (blocksWritten > 0)
+                    {
+                        LogWrite.EncryptedLine(writer, blockSeparator);
+                    }
+                    zoteHelperSettings.WriteSection(writer);
+                    blocksWritten++;
+                }
+
+                if (includeBossManipulate && bossManipulateSettings.HasData)
                 {
                     if (blocksWritten > 0)
                     {
@@ -197,6 +234,16 @@ namespace ReplayLogger
                     blocksWritten++;
                 }
 
+                if (maskDamageSettings.HasData)
+                {
+                    if (blocksWritten > 0)
+                    {
+                        LogWrite.EncryptedLine(writer, blockSeparator);
+                    }
+                    maskDamageSettings.WriteSection(writer);
+                    blocksWritten++;
+                }
+
                 if (gearSwitcherSettings.HasData)
                 {
                     if (blocksWritten > 0)
@@ -204,6 +251,16 @@ namespace ReplayLogger
                         LogWrite.EncryptedLine(writer, blockSeparator);
                     }
                     gearSwitcherSettings.WriteSection(writer);
+                    blocksWritten++;
+                }
+
+                if (gameOptimizeSettings.HasData)
+                {
+                    if (blocksWritten > 0)
+                    {
+                        LogWrite.EncryptedLine(writer, blockSeparator);
+                    }
+                    gameOptimizeSettings.WriteSection(writer);
                     blocksWritten++;
                 }
 

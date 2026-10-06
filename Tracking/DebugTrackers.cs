@@ -57,13 +57,8 @@ namespace ReplayLogger
             string from = lastUiVisible ? "On" : "Off";
             string to = uiVisible ? "On" : "Off";
             long delta = Math.Max(0, nowUnixTime - lastUnixTime);
-            events.Add($"  |{NormalizeArena(arenaName)}|+{delta}|UI: {from} -> {to}");
+            events.Add($"  |{ArenaNormalization.NormalizeLenient(arenaName)}|+{delta}|UI: {from} -> {to}");
             lastUiVisible = uiVisible;
-        }
-
-        private static string NormalizeArena(string arenaName)
-        {
-            return string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
         }
     }
 
@@ -147,7 +142,7 @@ namespace ReplayLogger
         internal void TrackActivation(KeyCode keyCode, string arenaName, long lastUnixTime, long unixTime)
         {
             long delta = Math.Max(0, unixTime - lastUnixTime);
-            string arena = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
+            string arena = ArenaNormalization.NormalizeLenient(arenaName);
 
             if (!actionsByKey.TryGetValue(keyCode, out List<string> actions) || actions == null || actions.Count == 0)
             {
@@ -281,22 +276,22 @@ namespace ReplayLogger
 
             if (cheatSnapshot.InfiniteSoul != lastCheatSnapshot.InfiniteSoul)
             {
-                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Infinite Soul", OnOff(lastCheatSnapshot.InfiniteSoul), OnOff(cheatSnapshot.InfiniteSoul));
+                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Infinite Soul", OptionalFormatting.FormatToggle(lastCheatSnapshot.InfiniteSoul), OptionalFormatting.FormatToggle(cheatSnapshot.InfiniteSoul));
             }
 
             if (cheatSnapshot.InfiniteHp != lastCheatSnapshot.InfiniteHp)
             {
-                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Infinite HP", OnOff(lastCheatSnapshot.InfiniteHp), OnOff(cheatSnapshot.InfiniteHp));
+                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Infinite HP", OptionalFormatting.FormatToggle(lastCheatSnapshot.InfiniteHp), OptionalFormatting.FormatToggle(cheatSnapshot.InfiniteHp));
             }
 
             if (cheatSnapshot.Noclip != lastCheatSnapshot.Noclip)
             {
-                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Noclip", OnOff(lastCheatSnapshot.Noclip), OnOff(cheatSnapshot.Noclip));
+                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Noclip", OptionalFormatting.FormatToggle(lastCheatSnapshot.Noclip), OptionalFormatting.FormatToggle(cheatSnapshot.Noclip));
             }
 
             if (cheatSnapshot.KeyBindLock != lastCheatSnapshot.KeyBindLock)
             {
-                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Key Bind Lock", OnOff(lastCheatSnapshot.KeyBindLock), OnOff(cheatSnapshot.KeyBindLock));
+                LogChange(writer, arenaName, lastUnixTime, nowUnixTime, "Key Bind Lock", OptionalFormatting.FormatToggle(lastCheatSnapshot.KeyBindLock), OptionalFormatting.FormatToggle(cheatSnapshot.KeyBindLock));
             }
 
             lastCheatSnapshot = cheatSnapshot;
@@ -349,17 +344,7 @@ namespace ReplayLogger
         private void LogChange(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, string name, string fromValue, string toValue)
         {
             long delta = Math.Max(0, nowUnixTime - lastUnixTime);
-            entries.Add($"  |{NormalizeArena(arenaName)}|+{delta}|{name}: {fromValue} -> {toValue}");
-        }
-
-        private static string NormalizeArena(string arenaName)
-        {
-            return string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
-        }
-
-        private static string OnOff(bool value)
-        {
-            return value ? "On" : "Off";
+            entries.Add($"  |{ArenaNormalization.NormalizeLenient(arenaName)}|+{delta}|{name}: {fromValue} -> {toValue}");
         }
     }
 }

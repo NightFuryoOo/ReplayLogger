@@ -18,6 +18,9 @@ namespace ReplayLogger
         private bool hasCurrentState;
         private readonly List<string> changes = new();
 
+        private Optional<int> lastObservedMainGain = Optional<int>.None;
+        private Optional<int> lastObservedReserveGain = Optional<int>.None;
+
         private Type settingsType;
         private bool settingsResolved;
         private PropertyInfo globalSettingsProperty;
@@ -25,13 +28,6 @@ namespace ReplayLogger
         private PropertyInfo gearSwitcherProperty;
         private PropertyInfo gearSwitcherPresetsProperty;
         private PropertyInfo gearSwitcherLastPresetProperty;
-
-        private Type gearSwitcherType;
-        private bool gearSwitcherResolved;
-        private FieldInfo mainSoulGainOverrideField;
-        private FieldInfo reserveSoulGainOverrideField;
-        private MethodInfo getMainSoulGainMethod;
-        private MethodInfo getReserveSoulGainMethod;
 
         public bool HasData => hasInitialState || changes.Count > 0;
 
@@ -45,11 +41,13 @@ namespace ReplayLogger
             currentState = default;
             hasCurrentState = false;
             changes.Clear();
+            lastObservedMainGain = Optional<int>.None;
+            lastObservedReserveGain = Optional<int>.None;
         }
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
-            currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
+            currentArenaName = ArenaNormalization.NormalizeLenient(arenaName);
             currentBaseUnixTime = baseUnixTime;
             long now = baseUnixTime;
 
@@ -72,10 +70,10 @@ namespace ReplayLogger
                 return;
             }
 
-            LogFieldChange("Main Vessel Soul Gain (Value)", currentState.MainSoulGainValue, snapshot.MainSoulGainValue, now);
-            LogFieldChange("Reserve Vessel Soul Gain (Value)", currentState.ReserveSoulGainValue, snapshot.ReserveSoulGainValue, now);
-            LogFieldChange("Main Vessel Soul Gain (In-Game)", currentState.MainSoulGainInGame, snapshot.MainSoulGainInGame, now);
-            LogFieldChange("Reserve Vessel Soul Gain (In-Game)", currentState.ReserveSoulGainInGame, snapshot.ReserveSoulGainInGame, now);
+            LogFieldChange("Main Vessel Soul Gain (Mod Value)", currentState.MainSoulGainValue, snapshot.MainSoulGainValue, now);
+            LogFieldChange("Reserve Vessel Soul Gain (Mod Value)", currentState.ReserveSoulGainValue, snapshot.ReserveSoulGainValue, now);
+            LogFieldChange("Nail Damage (Mod Value)", currentState.NailDamageModValue, snapshot.NailDamageModValue, now);
+            LogFieldChange("Nail Damage (Game Value)", currentState.NailDamageGameValue, snapshot.NailDamageGameValue, now);
 
             currentState = snapshot;
         }
@@ -102,12 +100,53 @@ namespace ReplayLogger
             }
 
             long now = nowUnixTime;
-            LogFieldChange("Main Vessel Soul Gain (Value)", currentState.MainSoulGainValue, snapshot.MainSoulGainValue, now);
-            LogFieldChange("Reserve Vessel Soul Gain (Value)", currentState.ReserveSoulGainValue, snapshot.ReserveSoulGainValue, now);
-            LogFieldChange("Main Vessel Soul Gain (In-Game)", currentState.MainSoulGainInGame, snapshot.MainSoulGainInGame, now);
-            LogFieldChange("Reserve Vessel Soul Gain (In-Game)", currentState.ReserveSoulGainInGame, snapshot.ReserveSoulGainInGame, now);
+            LogFieldChange("Main Vessel Soul Gain (Mod Value)", currentState.MainSoulGainValue, snapshot.MainSoulGainValue, now);
+            LogFieldChange("Reserve Vessel Soul Gain (Mod Value)", currentState.ReserveSoulGainValue, snapshot.ReserveSoulGainValue, now);
+            LogFieldChange("Nail Damage (Mod Value)", currentState.NailDamageModValue, snapshot.NailDamageModValue, now);
+            LogFieldChange("Nail Damage (Game Value)", currentState.NailDamageGameValue, snapshot.NailDamageGameValue, now);
 
             currentState = snapshot;
+        }
+
+        public void RecordObservedSoulGain(string arenaName, long lastUnixTime, long nowUnixTime, int mainGained, int reserveGained)
+        {
+            if (!hasInitialState)
+            {
+                return;
+            }
+
+            string arena = ArenaNormalization.NormalizeLenient(arenaName);
+            long delta = currentBaseUnixTime > 0 ? nowUnixTime - currentBaseUnixTime : 0;
+
+            if (mainGained != 0)
+            {
+                Optional<int> value = new(mainGained);
+                if (value != lastObservedMainGain)
+                {
+                    if (lastObservedMainGain.HasValue)
+                    {
+                        string descriptor = $"Main Vessel Soul Gain (Game Value): {OptionalFormatting.FormatOptionalInt(lastObservedMainGain)} -> {OptionalFormatting.FormatOptionalInt(value)}";
+                        changes.Add($"|{arena}|+{delta}|{descriptor}");
+                    }
+
+                    lastObservedMainGain = value;
+                }
+            }
+
+            if (reserveGained != 0)
+            {
+                Optional<int> value = new(reserveGained);
+                if (value != lastObservedReserveGain)
+                {
+                    if (lastObservedReserveGain.HasValue)
+                    {
+                        string descriptor = $"Reserve Vessel Soul Gain (Game Value): {OptionalFormatting.FormatOptionalInt(lastObservedReserveGain)} -> {OptionalFormatting.FormatOptionalInt(value)}";
+                        changes.Add($"|{arena}|+{delta}|{descriptor}");
+                    }
+
+                    lastObservedReserveGain = value;
+                }
+            }
         }
 
         public void WriteSection(StreamWriter writer)
@@ -117,7 +156,7 @@ namespace ReplayLogger
                 return;
             }
 
-            List<string> batch = TempObjectPools.RentStringList(changes.Count + 8);
+            List<string> batch = TempObjectPools.RentStringList(changes.Count + 10);
             try
             {
                 batch.Add("  GearSwitcher:");
@@ -126,10 +165,12 @@ namespace ReplayLogger
                     batch.Add($"    Initial Arena: {initialArenaName}");
                 }
                 batch.Add("    State:");
-                batch.Add($"      Main Vessel Soul Gain (Value): {FormatOptionalInt(initialState.MainSoulGainValue)}");
-                batch.Add($"      Reserve Vessel Soul Gain (Value): {FormatOptionalInt(initialState.ReserveSoulGainValue)}");
-                batch.Add($"      Main Vessel Soul Gain (In-Game): {FormatOptionalInt(initialState.MainSoulGainInGame)}");
-                batch.Add($"      Reserve Vessel Soul Gain (In-Game): {FormatOptionalInt(initialState.ReserveSoulGainInGame)}");
+                batch.Add($"      Main Vessel Soul Gain (Mod Value): {OptionalFormatting.FormatOptionalInt(initialState.MainSoulGainValue)}");
+                batch.Add($"      Reserve Vessel Soul Gain (Mod Value): {OptionalFormatting.FormatOptionalInt(initialState.ReserveSoulGainValue)}");
+                batch.Add($"      Main Vessel Soul Gain (Game Value): {OptionalFormatting.FormatOptionalInt(lastObservedMainGain)}");
+                batch.Add($"      Reserve Vessel Soul Gain (Game Value): {OptionalFormatting.FormatOptionalInt(lastObservedReserveGain)}");
+                batch.Add($"      Nail Damage (Mod Value): {OptionalFormatting.FormatOptionalInt(initialState.NailDamageModValue)}");
+                batch.Add($"      Nail Damage (Game Value): {OptionalFormatting.FormatOptionalInt(initialState.NailDamageGameValue)}");
                 batch.Add("    Changes:");
                 if (changes.Count == 0)
                 {
@@ -156,8 +197,8 @@ namespace ReplayLogger
             return new GearSwitcherState(
                 TryGetMainSoulGainValue(out int mainValue) ? new Optional<int>(mainValue) : Optional<int>.None,
                 TryGetReserveSoulGainValue(out int reserveValue) ? new Optional<int>(reserveValue) : Optional<int>.None,
-                TryGetMainSoulGainOverride(out int mainOverride) ? new Optional<int>(mainOverride) : Optional<int>.None,
-                TryGetReserveSoulGainOverride(out int reserveOverride) ? new Optional<int>(reserveOverride) : Optional<int>.None);
+                TryGetPresetNailDamage(out int nailDamageMod) ? new Optional<int>(nailDamageMod) : Optional<int>.None,
+                TryGetGameNailDamage(out int nailDamageGame) ? new Optional<int>(nailDamageGame) : Optional<int>.None);
         }
 
         private void LogFieldChange(string key, Optional<int> previous, Optional<int> current, long now)
@@ -167,16 +208,9 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalInt(previous)} -> {OptionalFormatting.FormatOptionalInt(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
-        }
-
-        private static string FormatOptionalInt(Optional<int> value)
-        {
-            return value.HasValue
-                ? value.Value.ToString(CultureInfo.InvariantCulture)
-                : "N/A";
         }
 
         private readonly struct GearSwitcherState
@@ -184,19 +218,19 @@ namespace ReplayLogger
             internal GearSwitcherState(
                 Optional<int> mainSoulGainValue,
                 Optional<int> reserveSoulGainValue,
-                Optional<int> mainSoulGainInGame,
-                Optional<int> reserveSoulGainInGame)
+                Optional<int> nailDamageModValue,
+                Optional<int> nailDamageGameValue)
             {
                 MainSoulGainValue = mainSoulGainValue;
                 ReserveSoulGainValue = reserveSoulGainValue;
-                MainSoulGainInGame = mainSoulGainInGame;
-                ReserveSoulGainInGame = reserveSoulGainInGame;
+                NailDamageModValue = nailDamageModValue;
+                NailDamageGameValue = nailDamageGameValue;
             }
 
             internal Optional<int> MainSoulGainValue { get; }
             internal Optional<int> ReserveSoulGainValue { get; }
-            internal Optional<int> MainSoulGainInGame { get; }
-            internal Optional<int> ReserveSoulGainInGame { get; }
+            internal Optional<int> NailDamageModValue { get; }
+            internal Optional<int> NailDamageGameValue { get; }
         }
 
         private bool TryGetMainSoulGainValue(out int value)
@@ -215,15 +249,52 @@ namespace ReplayLogger
                 : false;
         }
 
-        private bool TryGetPresetSoulGain(out int mainSoulGain, out int reserveSoulGain)
+        private bool TryGetPresetNailDamage(out int value)
         {
-            mainSoulGain = 0;
-            reserveSoulGain = 0;
+            value = 0;
 
+            object preset = GetActivePreset();
+            if (preset == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!ReflectionMemberAccessCache.TryGetCachedRuntimePropertyValue(preset, "NailDamage", out object raw) ||
+                    raw == null)
+                {
+                    return false;
+                }
+
+                value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private static bool TryGetGameNailDamage(out int value)
+        {
+            value = 0;
+            if (PlayerData.instance == null)
+            {
+                return false;
+            }
+
+            value = PlayerData.instance.nailDamage;
+            return true;
+        }
+
+        private object GetActivePreset()
+        {
             object settings = GetGearSwitcherSettings();
             if (settings == null)
             {
-                return false;
+                return null;
             }
 
             if (gearSwitcherLastPresetProperty == null || gearSwitcherPresetsProperty == null)
@@ -255,31 +326,33 @@ namespace ReplayLogger
 
             if (presets == null || presets.Count == 0)
             {
-                return false;
+                return null;
             }
 
-            object preset = null;
             if (!string.IsNullOrWhiteSpace(presetName) && presets.Contains(presetName))
             {
-                preset = presets[presetName];
+                return presets[presetName];
             }
 
-            if (preset == null)
+            if (presets.Contains("FullGear"))
             {
-                if (presets.Contains("FullGear"))
-                {
-                    preset = presets["FullGear"];
-                }
-                else
-                {
-                    foreach (DictionaryEntry entry in presets)
-                    {
-                        preset = entry.Value;
-                        break;
-                    }
-                }
+                return presets["FullGear"];
             }
 
+            foreach (DictionaryEntry entry in presets)
+            {
+                return entry.Value;
+            }
+
+            return null;
+        }
+
+        private bool TryGetPresetSoulGain(out int mainSoulGain, out int reserveSoulGain)
+        {
+            mainSoulGain = 0;
+            reserveSoulGain = 0;
+
+            object preset = GetActivePreset();
             if (preset == null)
             {
                 return false;
@@ -363,103 +436,11 @@ namespace ReplayLogger
         {
             if (!settingsResolved)
             {
-                settingsType = FindType("GodhomeQoL.Settings.Settings");
+                settingsType = TypeLookup.FindType("GodhomeQoL.GodhomeQoL") ?? TypeLookup.FindType("GodhomeQoL.Settings.Settings");
                 settingsResolved = true;
             }
 
             return settingsType;
-        }
-
-        private bool TryGetMainSoulGainOverride(out int value)
-        {
-            value = 0;
-            return TryGetSoulGainOverride("mainSoulGainOverride", ref mainSoulGainOverrideField, ref getMainSoulGainMethod, out value);
-        }
-
-        private bool TryGetReserveSoulGainOverride(out int value)
-        {
-            value = 0;
-            return TryGetSoulGainOverride("reserveSoulGainOverride", ref reserveSoulGainOverrideField, ref getReserveSoulGainMethod, out value);
-        }
-
-        private bool TryGetSoulGainOverride(string fieldName, ref FieldInfo field, ref MethodInfo method, out int value)
-        {
-            value = 0;
-            Type type = GetGearSwitcherType();
-            if (type == null)
-            {
-                return false;
-            }
-
-            if (field == null)
-            {
-                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-                field = type.GetField(fieldName, flags);
-            }
-
-            try
-            {
-                object raw = field?.GetCachedValue(null);
-                if (raw != null)
-                {
-                    value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
-                    return true;
-                }
-            }
-            catch
-            {
-            }
-
-            if (method == null)
-            {
-                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-                string methodName = fieldName.IndexOf("main", StringComparison.OrdinalIgnoreCase) >= 0
-                    ? "GetMainSoulGain"
-                    : "GetReserveSoulGain";
-                method = type.GetMethod(methodName, flags);
-            }
-
-            try
-            {
-                object raw = method?.InvokeCached(null);
-                if (raw == null)
-                {
-                    return false;
-                }
-
-                value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
-                return true;
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
-        private Type GetGearSwitcherType()
-        {
-            if (!gearSwitcherResolved)
-            {
-                gearSwitcherType = FindType("GodhomeQoL.Modules.Tools.GearSwitcher");
-                gearSwitcherResolved = true;
-            }
-
-            return gearSwitcherType;
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
     }
 }

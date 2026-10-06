@@ -26,21 +26,16 @@ public class LoadingSprite
     {
         Flag = !Flag;
 
-        currentSeed = CalculateNewSeed(currentSeed, previousSecondCount);
+        currentSeed = global::ReplayLogger.SeedMath.CombineSeed(currentSeed, previousSecondCount);
 
         SecondCount = GenerateFrameCount(currentSeed);
 
         if (SecondCount == previousSecondCount)
         {
-            SecondCount = GenerateFrameCount(CalculateNewSeed(currentSeed, previousSecondCount + 1));
+            SecondCount = GenerateFrameCount(global::ReplayLogger.SeedMath.CombineSeed(currentSeed, previousSecondCount + 1));
         }
         previousSecondCount = SecondCount;
 
-    }
-
-    private int CalculateNewSeed(int currentSeed, int previousValue)
-    {
-        return currentSeed * 31 + previousValue;
     }
 
     private int HashToInt(string hash)

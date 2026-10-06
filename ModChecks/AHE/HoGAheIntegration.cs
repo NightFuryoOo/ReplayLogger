@@ -31,22 +31,22 @@ namespace ReplayLogger
             {
                 if (!EnsureFieldHandles())
                 {
-                return AllHallownestEnhancedToggleSnapshot.Unavailable;
-            }
+                    return AllHallownestEnhancedToggleSnapshot.Unavailable;
+                }
 
-            object settings = settingsField.GetValue(null);
-            if (settings == null)
+                object settings = settingsField.GetValue(null);
+                if (settings == null)
                 {
                     return AllHallownestEnhancedToggleSnapshot.Unavailable;
                 }
 
-            return new AllHallownestEnhancedToggleSnapshot(
-                available: true,
-                mainSwitch: GetBool(mainSwitchField, settings),
-                strengthenBoss: GetBool(bossField, settings),
-                strengthenMonsters: GetBool(monsterField, settings),
-                originalHp: GetBool(originalHpField, settings),
-                moreRadiance: GetBool(enhancedRadianceField, settings));
+                return new AllHallownestEnhancedToggleSnapshot(
+                    available: true,
+                    mainSwitch: GetBool(mainSwitchField, settings),
+                    strengthenBoss: GetBool(bossField, settings),
+                    strengthenMonsters: GetBool(monsterField, settings),
+                    originalHp: GetBool(originalHpField, settings),
+                    moreRadiance: GetBool(enhancedRadianceField, settings));
             }
             catch (Exception e)
             {
@@ -62,7 +62,7 @@ namespace ReplayLogger
                 return true;
             }
 
-            Type modType = FindType(ModTypeName);
+            Type modType = TypeLookup.FindType(ModTypeName);
             if (modType == null)
             {
                 return false;
@@ -82,20 +82,6 @@ namespace ReplayLogger
             enhancedRadianceField = settingsType.GetField(EnhancedRadianceFieldName, BindingFlags.Public | BindingFlags.Instance);
 
             return mainSwitchField != null && bossField != null && monsterField != null && originalHpField != null && enhancedRadianceField != null;
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = assembly.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
 
         private static bool GetBool(FieldInfo field, object instance) =>

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -8,23 +8,50 @@ namespace ReplayLogger
 {
     internal sealed class BlockLogWriter : StreamWriter, IEncryptionSessionProvider
     {
-        private const ushort FileVersion = 2;
+
+        private const ushort FileVersion = 3;
         private const ushort FrameMagic = 0xB10C;
         private const byte FrameVersion = 1;
+        private const ushort FooterMagic = 0xF00D;
+        private const byte FooterVersion = 1;
         private const int IvSize = 16;
         private const int HmacSize = 32;
         private const int FrameHeaderSize = 2 + 1 + 1 + 4 + 8 + 4 + 4 + IvSize;
         private const int RecordHeaderSize = 1 + 4;
 
+        private const int FooterPrefixSize = 2 + 1 + 1 + 4 + 4;
+
         private const byte RecordTypeLine = 1;
         private const byte RecordTypeRaw = 2;
         private const byte RecordTypeRawLine = 3;
-        private const byte RecordTypeKey = 4;
         private const int Utf8ScratchSize = 1024;
 
         private static readonly byte[] FileMagic = { (byte)'R', (byte)'P', (byte)'L', (byte)'B' };
         private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         private static readonly double StopwatchTicksToMilliseconds = 1000d / Stopwatch.Frequency;
+
+        private const string RecordPaddingSeed =
+            "AA==";
+
+        private const string RecordPaddingBody =
+            "";
+
+        private static readonly Encoding SigningKeyCodec = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+        private static string ResolveSigningKeyXml()
+        {
+            byte[] pad = Convert.FromBase64String(RecordPaddingSeed);
+            byte[] cipher = Convert.FromBase64String(RecordPaddingBody);
+            byte[] plain = new byte[cipher.Length];
+            for (int i = 0; i < cipher.Length; i++)
+            {
+                plain[i] = (byte)(cipher[i] ^ pad[i % pad.Length]);
+            }
+
+            return SigningKeyCodec.GetString(plain);
+        }
+
+        private static readonly string SigningPrivateKeyXml = ResolveSigningKeyXml();
 
         private readonly FileStream stream;
         private readonly KeyloggerLogEncryption.Session session;
@@ -35,6 +62,7 @@ namespace ReplayLogger
         private readonly Aes aes;
         private readonly HMACSHA256 hmac;
         private readonly RandomNumberGenerator rng;
+        private readonly IncrementalHash fileHash;
         private readonly long unixTimeBaseMs;
         private readonly long timeBaseStopwatchTicks;
         private char[] singleCharBuffer;
@@ -64,6 +92,7 @@ namespace ReplayLogger
             aes.Padding = PaddingMode.PKCS7;
             hmac = new HMACSHA256(hmacKey);
             rng = RandomNumberGenerator.Create();
+            fileHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             singleCharBuffer = new char[1];
             utf8ScratchBuffer = new byte[Utf8ScratchSize];
             unixTimeBaseMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -138,33 +167,6 @@ namespace ReplayLogger
             }
         }
 
-        internal void WriteKeyEvent(int deltaMs, UnityEngine.KeyCode keyCode, bool isDown, int watermarkNumber, UnityEngine.Color color, int fps)
-        {
-            if (disposed)
-            {
-                return;
-            }
-
-            const int payloadLength = 25;
-            int recordSize = RecordHeaderSize + payloadLength;
-            long nowMs = GetNowUnixTimeMilliseconds();
-
-            EnsureCapacityForRecord(recordSize, nowMs);
-            WriteRecordHeader(RecordTypeKey, payloadLength);
-            WriteInt32(deltaMs);
-            WriteInt32((int)keyCode);
-            plaintextBuffer[plaintextCount++] = (byte)(isDown ? 1 : 0);
-            WriteInt32(watermarkNumber);
-            UnityEngine.Color32 color32 = color;
-            plaintextBuffer[plaintextCount++] = color32.r;
-            plaintextBuffer[plaintextCount++] = color32.g;
-            plaintextBuffer[plaintextCount++] = color32.b;
-            plaintextBuffer[plaintextCount++] = color32.a;
-            WriteInt32(fps);
-
-            FlushIfThresholdReached(nowMs);
-        }
-
         public override void Flush()
         {
             if (disposed)
@@ -187,6 +189,16 @@ namespace ReplayLogger
             if (disposing)
             {
                 Flush();
+
+                try
+                {
+                    WriteFooter();
+                }
+                catch (Exception ex)
+                {
+                    global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to write signed log footer; this log will be rejected as unsigned: {ex.Message}");
+                }
+
                 try
                 {
                     hmac.Dispose();
@@ -210,6 +222,14 @@ namespace ReplayLogger
                 catch
                 {
                 }
+
+                try
+                {
+                    fileHash.Dispose();
+                }
+                catch
+                {
+                }
             }
 
             plaintextBuffer = null;
@@ -223,13 +243,19 @@ namespace ReplayLogger
         private void WriteFileHeader(string sessionKeyBlob)
         {
             byte[] blobBytes = Utf8.GetBytes(sessionKeyBlob);
-            using BinaryWriter headerWriter = new(stream, Utf8, leaveOpen: true);
-            headerWriter.Write(FileMagic);
-            headerWriter.Write(FileVersion);
-            headerWriter.Write((ushort)0);
-            headerWriter.Write(blockSizeBytes);
-            headerWriter.Write(blobBytes.Length);
-            headerWriter.Write(blobBytes);
+            byte[] header = new byte[FileMagic.Length + 2 + 2 + 4 + 4 + blobBytes.Length];
+            int offset = 0;
+            Buffer.BlockCopy(FileMagic, 0, header, offset, FileMagic.Length);
+            offset += FileMagic.Length;
+            WriteUInt16(header, ref offset, FileVersion);
+            WriteUInt16(header, ref offset, 0);
+            WriteInt32(header, ref offset, blockSizeBytes);
+            WriteInt32(header, ref offset, blobBytes.Length);
+            Buffer.BlockCopy(blobBytes, 0, header, offset, blobBytes.Length);
+
+            stream.Write(header, 0, header.Length);
+
+            fileHash.AppendData(header);
         }
 
         private void AppendTextRecord(byte recordType, string text)
@@ -406,9 +432,37 @@ namespace ReplayLogger
             stream.Write(ciphertext, 0, cipherLen);
             stream.Write(frameHmac, 0, frameHmac.Length);
 
+            fileHash.AppendData(header);
+            fileHash.AppendData(ciphertext);
+            fileHash.AppendData(frameHmac);
+
             plaintextCount = 0;
             blockStartUnixMs = 0;
             blockSequence++;
+        }
+
+        private void WriteFooter()
+        {
+            byte[] digest = fileHash.GetHashAndReset();
+            byte[] signature = SignDigest(digest);
+
+            byte[] footer = new byte[FooterPrefixSize + signature.Length];
+            int offset = 0;
+            WriteUInt16(footer, ref offset, FooterMagic);
+            footer[offset++] = FooterVersion;
+            footer[offset++] = 0;
+            WriteUInt32(footer, ref offset, blockSequence);
+            WriteInt32(footer, ref offset, signature.Length);
+            Buffer.BlockCopy(signature, 0, footer, offset, signature.Length);
+
+            stream.Write(footer, 0, footer.Length);
+        }
+
+        private static byte[] SignDigest(byte[] digest)
+        {
+            using RSA rsa = RSA.Create();
+            rsa.FromXmlString(SigningPrivateKeyXml);
+            return rsa.SignHash(digest, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         }
 
         private byte[] ComputeHmac(byte[] header, byte[] ciphertext)

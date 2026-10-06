@@ -1,10 +1,14 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Reflection;
 
 namespace ReplayLogger
 {
     internal static class PaleCourtStatueIntegration
     {
+        private static readonly long LookupRetryTicks = Stopwatch.Frequency * 10;
+        private static long nextLookupTimestamp;
+
         private const string ModTypeName = "FiveKnights.FiveKnights";
         private const string InstanceFieldName = "Instance";
         private const string SaveSettingsMemberName = "SaveSettings";
@@ -90,9 +94,15 @@ namespace ReplayLogger
                 return true;
             }
 
+            if (Stopwatch.GetTimestamp() < nextLookupTimestamp)
+            {
+                return false;
+            }
+
             Type modType = FindType(ModTypeName);
             if (modType == null)
             {
+                nextLookupTimestamp = Stopwatch.GetTimestamp() + LookupRetryTicks;
                 return false;
             }
 
