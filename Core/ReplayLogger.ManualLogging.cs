@@ -14,6 +14,8 @@ namespace ReplayLogger
         private bool manualRoomHeaderWritten;
         private float manualStatusDelayUntil;
 
+        private bool manualBossManipulateLatched;
+
         internal void StopManualLoggingFromMenu()
         {
             if (isManualLogging)
@@ -87,34 +89,26 @@ namespace ReplayLogger
             {
                 long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
                 FlushKeyLogBufferIfNeeded(now, force: true);
-                FlushManualDamageBufferForTransition();
-                CoreSessionLogger.WriteSeparator(writer);
+
+                FlushBufferedSectionsForTransition();
             }
 
             string previousScene = manualStartScene;
             manualStartScene = sceneName;
             manualRoomStartUnixTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             lastUnixTime = manualRoomStartUnixTime;
-            bool includeBossManipulate = IsManualWorkshopBossTransition(previousScene, manualStartScene);
-            godhomeQolTracker.StartFight(manualStartScene, lastUnixTime, includeBossManipulate: includeBossManipulate);
+            if (IsManualWorkshopBossTransition(previousScene, manualStartScene))
+            {
+                manualBossManipulateLatched = true;
+            }
+            godhomeQolTracker.StartFight(manualStartScene, lastUnixTime, includeBossManipulate: manualBossManipulateLatched);
             string dataTime = DateTimeOffset.FromUnixTimeMilliseconds(manualRoomStartUnixTime).ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss.fff");
             string currentRoomLine = $"{dataTime}|{manualRoomStartUnixTime}|{manualStartScene}|";
-            bool hasTransitionPair = manualRoomHeaderWritten &&
-                                     !string.IsNullOrWhiteSpace(previousScene) &&
-                                     !string.Equals(previousScene, manualStartScene, StringComparison.Ordinal);
 
-            if (hasTransitionPair)
+            if (pressedButtonsLog != null || DamageAnfInv != null)
             {
-                string previousRoomLine = $"{dataTime}|{manualRoomStartUnixTime}|{previousScene}|";
-                LogWrite.EncryptedLine(writer, previousRoomLine);
-                if (DamageAnfInv != null)
-                {
-                    DamageAnfInv.Add(currentRoomLine);
-                }
-                else
-                {
-                    LogWrite.EncryptedLine(writer, currentRoomLine);
-                }
+                pressedButtonsLog?.Add(currentRoomLine);
+                DamageAnfInv?.Add(currentRoomLine);
             }
             else
             {
@@ -140,21 +134,30 @@ namespace ReplayLogger
             return currentScene.StartsWith("GG_", StringComparison.Ordinal);
         }
 
-        private void FlushManualDamageBufferForTransition()
+        private void ResetTransientTrackingState()
         {
-            if (writer == null || DamageAnfInv == null || !DamageAnfInv.HasContent)
-            {
-                return;
-            }
-
-            if (!damageSectionStarted)
-            {
-                LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE INV------------------------\n");
-                damageSectionStarted = true;
-            }
-
-            DamageAnfInv.WriteEncryptedLines(writer);
-            DamageAnfInv.Clear();
+            ResetInlineTimelineCursors();
+            keyLogBuffer.Clear();
+            lastKeyLogFlushTime = 0;
+            lastHudElapsedSeconds = -1;
+            keyScanner.Clear();
+            enemyColliderBufferOverflowLogged = false;
+            enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
+            enemyHealthManagerByGameObject.Clear();
+            enemyHealthManagerCacheCleanupBuffer.Clear();
+            lastEnemyHealthCacheCleanupTime = 0f;
+            infoBoss.Clear();
+            uniqueBossByGameObject.Clear();
+            uniqueBossSet.Clear();
+            infoBossKeysBuffer.Clear();
+            uniqueBossBuffersDirty = true;
+            hasHeroBoxState = false;
+            lastHeroBoxActive = -1;
+            heroBoxOffStartTime = -1f;
+            cachedHeroTransform = null;
+            cachedHeroBoxObject = null;
+            damageSectionStarted = false;
+            pressedButtonsSectionStarted = false;
         }
 
         private void StartManualLogging()
@@ -180,20 +183,24 @@ namespace ReplayLogger
 
             isPlayChalange = true;
             isManualLogging = true;
+            EnsureGameplayHooksActive();
             isChallengeCompleted = "-";
             bossCounter = 0;
             currentPanteon = (null, null);
             manualStatusDelayUntil = 0f;
+            manualBossManipulateLatched = false;
 
             try
             {
                 activeEncryptionSession = KeyloggerLogEncryption.CreateSession();
                 lastString = activeEncryptionSession.SessionKeyBlob;
                 currentNameLog = Path.Combine(dllDir, $"KeyLog{DateTime.UtcNow.Ticks}.log");
+                pressedButtonsLog?.Clear();
                 DamageAnfInv?.Clear();
                 InvWarn?.Clear();
                 speedWarnBuffer?.Clear();
                 hitWarnBuffer?.Clear();
+                pressedButtonsLog = new BufferedLogSection($"{currentNameLog}.keys.tmp", BufferedSectionThreshold);
                 DamageAnfInv = new BufferedLogSection($"{currentNameLog}.damage.tmp", BufferedSectionThreshold);
                 InvWarn = new BufferedLogSection($"{currentNameLog}.warn.tmp", BufferedSectionThreshold);
                 speedWarnBuffer = new BufferedLogSection($"{currentNameLog}.speed.tmp", BufferedSectionThreshold);
@@ -208,31 +215,14 @@ namespace ReplayLogger
                 debugModEventsTracker.Reset(initialDebugUiVisible);
                 debugMenuTracker.Reset(initialDebugUiVisible);
                 debugHotkeysTracker.InitializeBindings();
-                ResetInlineTimelineCursors();
-	                keyLogBuffer.Clear();
-	                lastKeyLogFlushTime = 0;
-                lastHudElapsedSeconds = -1;
-	                pressedKeys.Clear();
-	                pressedKeysBuffer.Clear();
-	                enemyColliderBufferOverflowLogged = false;
-                enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
-	                enemyHealthManagerByGameObject.Clear();
-	                enemyHealthManagerCacheCleanupBuffer.Clear();
-	                lastEnemyHealthCacheCleanupTime = 0f;
-	                infoBoss.Clear();
-	                uniqueBossByGameObject.Clear();
-	                uniqueBossSet.Clear();
-	                infoBossKeysBuffer.Clear();
-	                uniqueBossBuffersDirty = true;
-	                hasHeroBoxState = false;
-                lastHeroBoxActive = -1;
-                heroBoxOffStartTime = -1f;
-                cachedHeroTransform = null;
-                cachedHeroBoxObject = null;
+                ResetTransientTrackingState();
                 isInvincible = false;
                 invTimer = 0f;
-                damageSectionStarted = false;
                 charmsChangeTracker.Reset();
+                foreach (ITrackerLifecycle lifecycleTracker in LifecycleTrackers())
+                {
+                    lifecycleTracker.Reset();
+                }
 
                 CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
                 LogWrite.EncryptedLine(writer, CoreSessionLogger.BuildEquippedCharmsLine());
@@ -267,53 +257,35 @@ namespace ReplayLogger
                 {
                 }
 
+                pressedButtonsLog?.Clear();
                 DamageAnfInv?.Clear();
                 InvWarn?.Clear();
                 speedWarnBuffer?.Clear();
                 hitWarnBuffer?.Clear();
+                pressedButtonsLog = null;
                 DamageAnfInv = null;
                 InvWarn = null;
                 speedWarnBuffer = null;
                 hitWarnBuffer = null;
                 AheSettingsManager.Reset();
-                ZoteSettingsManager.Reset();
-                CollectorPhasesSettingsManager.Reset();
                 CustomKnightSettingsManager.Reset();
                 godhomeQolTracker.Reset();
                 debugHotkeysTracker.Reset();
                 debugMenuTracker.Reset();
-                ResetInlineTimelineCursors();
-	                keyLogBuffer.Clear();
-	                lastKeyLogFlushTime = 0;
-                lastHudElapsedSeconds = -1;
-	                pressedKeys.Clear();
-	                pressedKeysBuffer.Clear();
-	                enemyColliderBufferOverflowLogged = false;
-                enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
-	                enemyHealthManagerByGameObject.Clear();
-	                enemyHealthManagerCacheCleanupBuffer.Clear();
-	                lastEnemyHealthCacheCleanupTime = 0f;
-	                infoBoss.Clear();
-	                uniqueBossByGameObject.Clear();
-	                uniqueBossSet.Clear();
-	                infoBossKeysBuffer.Clear();
-	                uniqueBossBuffersDirty = true;
-	                hasHeroBoxState = false;
-                lastHeroBoxActive = -1;
-                heroBoxOffStartTime = -1f;
-                cachedHeroTransform = null;
-                cachedHeroBoxObject = null;
-                damageSectionStarted = false;
+                bossPhaseThresholdTracker.Reset();
+                ResetTransientTrackingState();
                 DisposeDebugModHooks();
                 isChallengeCompleted = "-";
                 bossCounter = 0;
                 startUnixTime = 0;
                 isPlayChalange = false;
                 isManualLogging = false;
+                ReleaseGameplayHooksIfIdle();
                 manualStartScene = null;
                 manualRoomHeaderWritten = false;
                 manualRoomStartUnixTime = 0;
                 manualHoldStartTime = 0f;
+                manualBossManipulateLatched = false;
                 customCanvas?.DestroyCanvas();
                 customCanvas = null;
                 currentPanteon = (null, null);
@@ -403,6 +375,4 @@ namespace ReplayLogger
         }
     }
 }
-
-
 

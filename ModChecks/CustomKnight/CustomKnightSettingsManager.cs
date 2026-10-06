@@ -35,7 +35,7 @@ namespace ReplayLogger
         {
             StopTracking();
             skinChanges.Clear();
-            trackingArena = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
+            trackingArena = ArenaNormalization.NormalizeLenient(arenaName);
             trackingStartUnixTime = startUnixTime;
             trackingActive = true;
 
@@ -86,8 +86,9 @@ namespace ReplayLogger
             }
 
             SkinSnapshot snapshot = initialSnapshot ?? CaptureCurrentSnapshot(includeHash: true);
-            List<string> lines = new(skinChanges.Count + 6)
+            List<string> lines = new(skinChanges.Count + 7)
             {
+                "Custom Knight:",
                 $"CustomKnight Skin: {snapshot.DisplayName}",
                 $"CustomKnight Skin ID: {FormatValue(snapshot.Id)}",
                 $"CustomKnight Skin SHA-256: {FormatValue(snapshot.Sha256)}",
@@ -427,8 +428,8 @@ namespace ReplayLogger
             }
 
             typeResolutionAttempted = true;
-            customKnightType = FindType(CustomKnightTypeName);
-            skinManagerType = FindType(SkinManagerTypeName);
+            customKnightType = TypeLookup.FindType(CustomKnightTypeName);
+            skinManagerType = TypeLookup.FindType(SkinManagerTypeName);
             if (customKnightType == null || skinManagerType == null)
             {
                 return false;
@@ -441,25 +442,6 @@ namespace ReplayLogger
             skinsFolderField = skinManagerType.GetField("SKINS_FOLDER", staticFlags);
             getCurrentSkinMethod = skinManagerType.GetMethod("GetCurrentSkin", staticFlags);
             return getCurrentSkinMethod != null;
-        }
-
-        private static Type FindType(string fullName)
-        {
-            if (string.IsNullOrWhiteSpace(fullName))
-            {
-                return null;
-            }
-
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
 
         private static string TryGetRuntimeStringProperty(object instance, string propertyName)

@@ -49,7 +49,7 @@ namespace ReplayLogger
 
         public void StartFight(string arenaName, long baseUnixTime)
         {
-            currentArenaName = string.IsNullOrWhiteSpace(arenaName) ? "UnknownArena" : arenaName;
+            currentArenaName = ArenaNormalization.NormalizeLenient(arenaName);
             currentBaseUnixTime = baseUnixTime;
 
             BossChallengeState snapshot = BuildState();
@@ -130,10 +130,10 @@ namespace ReplayLogger
                     batch.Add($"    Initial Arena: {initialArenaName}");
                 }
                 batch.Add("    State:");
-                batch.Add($"      Add Lifeblood: {FormatOptionalToggle(initialState.AddLifeblood)}");
-                batch.Add($"      Lifeblood Amount: {FormatOptionalInt(initialState.LifebloodAmount)}");
-                batch.Add($"      Add Soul: {FormatOptionalToggle(initialState.AddSoul)}");
-                batch.Add($"      Soul Amount: {FormatOptionalInt(initialState.SoulAmount)}");
+                batch.Add($"      Add Lifeblood: {OptionalFormatting.FormatOptionalToggle(initialState.AddLifeblood)}");
+                batch.Add($"      Lifeblood Amount: {OptionalFormatting.FormatOptionalInt(initialState.LifebloodAmount)}");
+                batch.Add($"      Add Soul: {OptionalFormatting.FormatOptionalToggle(initialState.AddSoul)}");
+                batch.Add($"      Soul Amount: {OptionalFormatting.FormatOptionalInt(initialState.SoulAmount)}");
                 batch.Add("    Changes:");
                 if (changes.Count == 0)
                 {
@@ -174,7 +174,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalToggle(previous)} -> {FormatOptionalToggle(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalToggle(previous)} -> {OptionalFormatting.FormatOptionalToggle(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -186,7 +186,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string descriptor = $"{key}: {FormatOptionalInt(previous)} -> {FormatOptionalInt(current)}";
+            string descriptor = $"{key}: {OptionalFormatting.FormatOptionalInt(previous)} -> {OptionalFormatting.FormatOptionalInt(current)}";
             long delta = currentBaseUnixTime > 0 ? now - currentBaseUnixTime : 0;
             changes.Add($"|{currentArenaName}|+{delta}|{descriptor}");
         }
@@ -363,7 +363,7 @@ namespace ReplayLogger
         {
             if (!moduleManagerResolved)
             {
-                moduleManagerType = FindType("GodhomeQoL.ModuleManager");
+                moduleManagerType = TypeLookup.FindType("GodhomeQoL.ModuleManager");
                 moduleManagerResolved = true;
             }
 
@@ -374,7 +374,7 @@ namespace ReplayLogger
         {
             if (!addLifebloodResolved)
             {
-                addLifebloodType = FindType("GodhomeQoL.Modules.BossChallenge.AddLifeblood");
+                addLifebloodType = TypeLookup.FindType("GodhomeQoL.Modules.BossChallenge.AddLifeblood");
                 addLifebloodResolved = true;
             }
 
@@ -385,40 +385,12 @@ namespace ReplayLogger
         {
             if (!addSoulResolved)
             {
-                addSoulType = FindType("GodhomeQoL.Modules.BossChallenge.AddSoul");
+                addSoulType = TypeLookup.FindType("GodhomeQoL.Modules.BossChallenge.AddSoul");
                 addSoulResolved = true;
             }
 
             return addSoulType;
         }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
-        }
-
-        private static string FormatOptionalToggle(Optional<bool> value)
-        {
-            return value.HasValue ? FormatToggle(value.Value) : "N/A";
-        }
-
-        private static string FormatOptionalInt(Optional<int> value)
-        {
-            return value.HasValue
-                ? value.Value.ToString(CultureInfo.InvariantCulture)
-                : "N/A";
-        }
-
-        private static string FormatToggle(bool value) => value ? "On" : "Off";
 
         private readonly struct BossChallengeState
         {

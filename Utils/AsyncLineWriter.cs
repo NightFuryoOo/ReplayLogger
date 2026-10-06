@@ -106,7 +106,7 @@ namespace ReplayLogger
             }
             catch
             {
-                
+
             }
 
             try
@@ -115,7 +115,7 @@ namespace ReplayLogger
             }
             catch
             {
-                
+
             }
 
             writer.Dispose();

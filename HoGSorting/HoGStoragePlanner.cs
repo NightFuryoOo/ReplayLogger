@@ -194,7 +194,7 @@ namespace ReplayLogger
                 return HoGStoragePlan.Final(paleCourt, null, PaleCourtWhiteDefenderScene);
             }
 
-            
+
             AllHallownestEnhancedToggleSnapshot snapshot = AheSettingsManager.CurrentSnapshot;
             if (snapshot.Available && snapshot.MainSwitch && snapshot.StrengthenAllBoss && snapshot.StrengthenAllMonsters)
             {
@@ -351,7 +351,7 @@ namespace ReplayLogger
                 }
                 catch
                 {
-                    
+
                 }
             }
 

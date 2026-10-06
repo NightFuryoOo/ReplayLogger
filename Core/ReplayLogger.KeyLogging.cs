@@ -10,12 +10,6 @@ namespace ReplayLogger
     {
         private readonly Dictionary<Color32, string> keyColorHexCache = new(128);
         private const int KeyColorHexCacheMaxSize = 512;
-        private readonly List<KeyCode> adaptiveHotKeyCodes = new(64);
-        private readonly HashSet<KeyCode> adaptiveHotKeySet = new();
-        private readonly List<KeyCode> adaptiveColdKeyCodes = new(512);
-        private readonly List<KeyCode> adaptivePromoteKeyBuffer = new(32);
-        private bool adaptiveKeyScanInitialized;
-        private const int AdaptiveHotKeyLimit = 48;
         private long cachedFrameUnixTime;
         private readonly struct KeyLogEvent
         {
@@ -48,7 +42,7 @@ namespace ReplayLogger
             }
 
             UpdateManualRoomTransition();
-            long frameUnixTime = CaptureFrameUnixTime();
+            long frameUnixTime = KeyLogFormatting.CaptureFrameUnixTime(ref cachedFrameUnixTime);
             MonitorDebugModUi(frameUnixTime);
             if (!isManualLogging && GameManager.instance != null && GameManager.instance.gameState == GlobalEnums.GameState.CUTSCENE && lastScene == "GG_Radiance")
             {
@@ -67,151 +61,14 @@ namespace ReplayLogger
             if (elapsedSeconds != lastHudElapsedSeconds)
             {
                 lastHudElapsedSeconds = elapsedSeconds;
-                customCanvas?.UpdateTime(FormatHudElapsedTime(relativeMs));
+                customCanvas?.UpdateTime(KeyLogFormatting.FormatHudElapsedTime(relativeMs));
             }
 
-            PollKeyEvents(frameUnixTime);
+            keyScanner.Poll(frameUnixTime, HandleKeyEvent);
             MirrorInlineTimelineEvents();
 
             FlushKeyLogBufferIfNeeded(frameUnixTime);
 
-        }
-
-        private void PollKeyEvents(long pollUnixTime)
-        {
-            bool hasNewKeyDown = Input.anyKeyDown;
-            if (!hasNewKeyDown && pressedKeys.Count == 0)
-            {
-                return;
-            }
-
-            if (hasNewKeyDown)
-            {
-                EnsureAdaptiveKeyScanInitialized();
-                adaptivePromoteKeyBuffer.Clear();
-                ScanKeyDownCandidates(adaptiveHotKeyCodes, pollUnixTime);
-                ScanKeyDownCandidates(adaptiveColdKeyCodes, pollUnixTime);
-                PromoteAdaptiveKeys();
-            }
-
-            if (pressedKeys.Count == 0)
-            {
-                return;
-            }
-
-            pressedKeysBuffer.Clear();
-            pressedKeysBuffer.AddRange(pressedKeys);
-            foreach (KeyCode keyCode in pressedKeysBuffer)
-            {
-                if (Input.GetKey(keyCode))
-                {
-                    continue;
-                }
-
-                HandleKeyEvent(keyCode, isDown: false, pollUnixTime);
-                pressedKeys.Remove(keyCode);
-            }
-        }
-
-        private void EnsureAdaptiveKeyScanInitialized()
-        {
-            if (adaptiveKeyScanInitialized)
-            {
-                return;
-            }
-
-            adaptiveHotKeyCodes.Clear();
-            adaptiveHotKeySet.Clear();
-            adaptiveColdKeyCodes.Clear();
-            adaptivePromoteKeyBuffer.Clear();
-            foreach (KeyCode keyCode in AllKeyCodes)
-            {
-                adaptiveColdKeyCodes.Add(keyCode);
-            }
-
-            adaptiveKeyScanInitialized = true;
-        }
-
-        private void ScanKeyDownCandidates(IReadOnlyList<KeyCode> candidates, long pollUnixTime)
-        {
-            if (candidates == null || candidates.Count == 0)
-            {
-                return;
-            }
-
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                KeyCode keyCode = candidates[i];
-                if (pressedKeys.Contains(keyCode))
-                {
-                    continue;
-                }
-
-                if (!Input.GetKeyDown(keyCode))
-                {
-                    continue;
-                }
-
-                if (pressedKeys.Add(keyCode))
-                {
-                    HandleKeyEvent(keyCode, isDown: true, pollUnixTime);
-                }
-
-                if (!adaptiveHotKeySet.Contains(keyCode))
-                {
-                    adaptivePromoteKeyBuffer.Add(keyCode);
-                }
-            }
-        }
-
-        private void PromoteAdaptiveKeys()
-        {
-            if (adaptivePromoteKeyBuffer.Count == 0)
-            {
-                return;
-            }
-
-            for (int i = 0; i < adaptivePromoteKeyBuffer.Count; i++)
-            {
-                KeyCode keyCode = adaptivePromoteKeyBuffer[i];
-                if (!adaptiveHotKeySet.Add(keyCode))
-                {
-                    continue;
-                }
-
-                adaptiveHotKeyCodes.Add(keyCode);
-                RemoveKeyCode(adaptiveColdKeyCodes, keyCode);
-            }
-
-            while (adaptiveHotKeyCodes.Count > AdaptiveHotKeyLimit)
-            {
-                KeyCode demoted = adaptiveHotKeyCodes[0];
-                adaptiveHotKeyCodes.RemoveAt(0);
-                adaptiveHotKeySet.Remove(demoted);
-                if (!adaptiveColdKeyCodes.Contains(demoted))
-                {
-                    adaptiveColdKeyCodes.Add(demoted);
-                }
-            }
-
-            adaptivePromoteKeyBuffer.Clear();
-        }
-
-        private static void RemoveKeyCode(List<KeyCode> source, KeyCode keyCode)
-        {
-            if (source == null || source.Count == 0)
-            {
-                return;
-            }
-
-            for (int i = 0; i < source.Count; i++)
-            {
-                if (source[i] == keyCode)
-                {
-                    source.RemoveAt(i);
-                    return;
-                }
-            }
         }
 
         private void HandleKeyEvent(KeyCode keyCode, bool isDown, long unixTime)
@@ -363,15 +220,17 @@ namespace ReplayLogger
             {
                 string formattedKey = JoystickKeyMapper.FormatKey(keyEvent.KeyCode);
                 string status = keyEvent.IsDown ? "+" : "-";
-                string colorHex = GetCachedColorHex(keyEvent.Color);
-                string logEntry = $"{keyEvent.DeltaMs}|{formattedKey}|{status}|{keyEvent.WatermarkNumber}|#{colorHex}|{keyEvent.Fps}|";
+                string colorHex = KeyLogFormatting.GetCachedColorHex(keyEvent.Color, keyColorHexCache);
+
+                string logEntry = $"{keyEvent.DeltaMs}|{status}{formattedKey}|{keyEvent.WatermarkNumber}|{colorHex}|{keyEvent.Fps}";
                 keyLogFlushLines.Add(logEntry);
             }
 
             bool wroteToSection = false;
             if (isPlayChalange)
             {
-                if (!isManualLogging && pressedButtonsLog != null)
+
+                if (pressedButtonsLog != null)
                 {
                     pressedButtonsLog.AddRange(keyLogFlushLines);
                     wroteToSection = true;
@@ -403,46 +262,6 @@ namespace ReplayLogger
             keyLogBuffer.Add(new KeyLogEvent(deltaMs, keyCode, isDown, watermarkNumber, (Color32)color, fps));
         }
 
-        private string GetCachedColorHex(Color32 color)
-        {
-            if (keyColorHexCache.TryGetValue(color, out string colorHex))
-            {
-                return colorHex;
-            }
-
-            if (keyColorHexCache.Count >= KeyColorHexCacheMaxSize)
-            {
-                keyColorHexCache.Clear();
-            }
-
-            colorHex = ColorUtility.ToHtmlStringRGBA(color);
-            keyColorHexCache[color] = colorHex;
-            return colorHex;
-        }
-
-        private static string FormatHudElapsedTime(long relativeMs)
-        {
-            long totalSeconds = Math.Max(0L, relativeMs) / 1000L;
-            int hours = (int)((totalSeconds / 3600L) % 24L);
-            int minutes = (int)((totalSeconds / 60L) % 60L);
-            int seconds = (int)(totalSeconds % 60L);
-            return $"{hours:D2}:{minutes:D2}:{seconds:D2}";
-        }
-
-        private long GetCachedFrameUnixTimeOrNow()
-        {
-            long cached = cachedFrameUnixTime;
-            return cached > 0 ? cached : DateTimeOffset.Now.ToUnixTimeMilliseconds();
-        }
-
-        private long CaptureFrameUnixTime()
-        {
-            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            cachedFrameUnixTime = now;
-            return now;
-        }
     }
 }
-
-
 

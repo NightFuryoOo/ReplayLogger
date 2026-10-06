@@ -90,7 +90,7 @@ namespace ReplayLogger
 
         public override void Flush()
         {
-            
+
         }
 
         protected override void Dispose(bool disposing)

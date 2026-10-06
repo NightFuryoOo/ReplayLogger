@@ -3,9 +3,9 @@ using System.IO;
 
 namespace ReplayLogger
 {
-    
-    
-    
+
+
+
     internal static class AheSettingsManager
     {
         private static AllHallownestEnhancedToggleSnapshot currentSnapshot = AllHallownestEnhancedToggleSnapshot.Unavailable;
@@ -44,7 +44,7 @@ namespace ReplayLogger
                 return;
             }
 
-                LogWrite.EncryptedLine(writer, line);
+            LogWrite.EncryptedLine(writer, line);
             if (!string.IsNullOrEmpty(separator))
             {
                 LogWrite.EncryptedLine(writer, separator);

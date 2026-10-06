@@ -209,7 +209,7 @@ namespace ReplayLogger
                     return new HoGBucketInfo("Pale Court", "Ogrim & Isma", "Pale Court", "Ogrim & Isma");
                 }
 
-                
+
                 return new HoGBucketInfo("HoG", "White Defender", "HoG");
             }
 

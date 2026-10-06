@@ -92,12 +92,6 @@ namespace ReplayLogger
                     SavedLogToast.Show(GetHudToastSeconds());
                 }
 
-                KeyCode copyKey = GetCopyLastSavedLogKey();
-                if (copyKey != KeyCode.None && Input.GetKeyDown(copyKey))
-                {
-                    CopyLastSavedLogToDesktop();
-                }
-
                 KeyCode openKey = GetOpenReplayLoggerFolderKey();
                 if (openKey != KeyCode.None && Input.GetKeyDown(openKey) && CanUseHotkey())
                 {
@@ -141,41 +135,6 @@ namespace ReplayLogger
             }
         }
 
-        private static void CopyLastSavedLogToDesktop()
-        {
-            if (!SavedLogTracker.TryGet(out SavedLogInfo info))
-            {
-                return;
-            }
-
-            string sourcePath = info.SourcePath;
-            if (!File.Exists(sourcePath))
-            {
-                return;
-            }
-
-            string copyRoot = GetCopyLogsRootPath();
-            if (string.IsNullOrWhiteSpace(copyRoot))
-            {
-                return;
-            }
-
-            string rootFolder = string.IsNullOrWhiteSpace(info.RootFolder) ? "Other" : info.RootFolder;
-            string bossFolder = string.IsNullOrWhiteSpace(info.BossFolder) ? "Unknown" : info.BossFolder;
-            string difficultyFolder = string.IsNullOrWhiteSpace(info.DifficultyFolder) ? "None" : info.DifficultyFolder;
-            string targetDir = Path.Combine(copyRoot, rootFolder, bossFolder, difficultyFolder);
-            string targetPath = Path.Combine(targetDir, Path.GetFileName(sourcePath));
-
-            try
-            {
-                Directory.CreateDirectory(targetDir);
-                File.Copy(sourcePath, targetPath, true);
-            }
-            catch
-            {
-                return;
-            }
-        }
     }
 }
 

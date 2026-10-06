@@ -121,8 +121,9 @@ public class KeyloggerLogEncryption
             session = new Session(key, iv, sessionKeyBlob);
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to recreate encryption session from stored key material: {ex.Message}");
             return false;
         }
     }

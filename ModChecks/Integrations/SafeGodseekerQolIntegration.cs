@@ -1,103 +1,21 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Reflection;
 
 namespace ReplayLogger
 {
+
     internal static class SafeGodseekerQolIntegration
     {
         private const string RootTypeName = "SafeGodseekerQoL.SafeGodseekerQoL";
         private const string ModuleManagerTypeName = "SafeGodseekerQoL.ModuleManager";
         private const string ModuleManagerModulesFieldName = "modules";
         private const string ModuleManagerModulesPropertyName = "Modules";
-        private const string GlobalSettingsTypeName = "SafeGodseekerQoL.Settings.GlobalSettings";
         private const string GlobalSettingsModulesPropertyName = "Modules";
         private const string GodhomeRootTypeName = "GodhomeQoL.GodhomeQoL";
         private const string GodhomeModuleManagerTypeName = "GodhomeQoL.ModuleManager";
-        private static Assembly cachedAssembly;
-
-        public static IReadOnlyList<string> GetSettingsLines()
-        {
-            Type modType = FindType(RootTypeName);
-            if (modType == null)
-            {
-                return Array.Empty<string>();
-            }
-
-            cachedAssembly = modType.Assembly;
-
-            bool? active = GetStaticPropertyBool(modType, "Active");
-            object globalSettings = GetStaticProperty(modType, "GlobalSettings");
-            Dictionary<string, bool> gsModules = GetGlobalModules(globalSettings);
-            var modules = GetModules();
-
-            List<string> lines = new()
-            {
-                $"SafeGodseekerQoL: {FmtOnOff(active)}",
-                "Boss Challenge:"
-            };
-
-            
-            AddModuleLine(lines, modules, gsModules, "Add LifeBlood", "AddLifeblood");
-            AddModuleLine(lines, modules, gsModules, "Add Soul", "AddSoul");
-            AddModuleLine(lines, modules, gsModules, "Force Grey Prince Enter Type", "ForceGreyPrinceEnterType");
-            AddModuleLine(lines, modules, gsModules, "Halve Damage (HoG Ascended or Above)", "HalveDamageHoGAscendedOrAbove");
-            AddModuleLine(lines, modules, gsModules, "Halve Damage (HoG Attuned)", "HalveDamageHoGAttuned");
-            AddModuleLine(lines, modules, gsModules, "Halve Damage (Other Place)", "HalveDamageOtherPlace");
-            AddModuleLine(lines, modules, gsModules, "Halve Damage (Pantheons)", "HalveDamagePantheons");
-            AddModuleLine(lines, modules, gsModules, "Infinite Challenge", "InfiniteChallenge");
-            AddModuleLine(lines, modules, gsModules, "P5 Health", "P5Health");
-            AddModuleLine(lines, modules, gsModules, "Segmented P5", "SegmentedP5");
-            AddBoolSettingLine(lines, "Restart Fight On Success As Well", "SafeGodseekerQoL.Modules.BossChallenge.InfiniteChallenge", "restartFightOnSuccess");
-            AddBoolSettingLine(lines, "Restart Fight And Music", "SafeGodseekerQoL.Modules.BossChallenge.InfiniteChallenge", "restartFightAndMusic");
-            AddIntSettingLine(lines, "LifeBlood Amount", "SafeGodseekerQoL.Modules.BossChallenge.AddLifeblood", "lifebloodAmount");
-            AddIntSettingLine(lines, "Soul Amount", "SafeGodseekerQoL.Modules.BossChallenge.AddSoul", "soulAmount");
-            AddValueSettingLine(lines, "GPZ Enter Type", "SafeGodseekerQoL.Modules.BossChallenge.ForceGreyPrinceEnterType", "gpzEnterType");
-
-            lines.Add("BugFix:");
-            AddModuleLine(lines, modules, gsModules, "HUD Display Checker", "HUDDisplayChecker");
-
-            lines.Add("Quality Of Life:");
-            AddModuleLine(lines, modules, gsModules, "Complete Lower Difficulty", "CompleteLowerDifficulty");
-            AddModuleLine(lines, modules, gsModules, "Door Default Begin", "DoorDefaultBegin");
-            AddModuleLine(lines, modules, gsModules, "Fast Dream Warp", "FastDreamWarp");
-            AddModuleLine(lines, modules, gsModules, "Memorize Bindings", "MemorizeBindings");
-            AddModuleLine(lines, modules, gsModules, "Short Death Animation", "ShortDeathAnimation");
-            AddModuleLine(lines, modules, gsModules, "Skip Cutscenes", "SkipCutscenes");
-            AddModuleLine(lines, modules, gsModules, "Unlock Radiant", "UnlockRadiant");
-            AddBoolSettingLine(lines, "Instant Warp", "SafeGodseekerQoL.Modules.QoL.FastDreamWarp", "instantWarp");
-            
-            const string skipNs = "SafeGodseekerQoL.Modules.QoL.SkipCutscenes";
-            AddBoolSettingLine(lines, "Dreamers Get", skipNs, "DreamersGet");
-            AddBoolSettingLine(lines, "Absolute Radiance", skipNs, "AbsoluteRadiance");
-            AddBoolSettingLine(lines, "Abyss Shriek Get", skipNs, "AbyssShriekGet");
-            AddBoolSettingLine(lines, "After Kings Brand Get", skipNs, "AfterKingsBrandGet");
-            AddBoolSettingLine(lines, "Black Egg Open", skipNs, "BlackEggOpen");
-            AddBoolSettingLine(lines, "Stag Arrive", skipNs, "StagArrive");
-            AddBoolSettingLine(lines, "Hall Of Gods Statues", skipNs, "HallOfGodsStatues");
-            AddBoolSettingLine(lines, "Godhome Entry", skipNs, "GodhomeEntry");
-            AddBoolSettingLine(lines, "Pure Vessel Roar", skipNs, "PureVesselRoar");
-            AddBoolSettingLine(lines, "Grimm Nightmare", skipNs, "GrimmNightmare");
-            AddBoolSettingLine(lines, "GreyPrinceZote", skipNs, "GreyPrinceZote");
-            AddBoolSettingLine(lines, "Collector", skipNs, "Collector");
-            AddBoolSettingLine(lines, "First Time Bosses", skipNs, "FirstTimeBosses");
-            AddBoolSettingLine(lines, "First Charm", skipNs, "FirstCharm");
-            AddBoolSettingLine(lines, "Auto Skip Cinematics", skipNs, "AutoSkipCinematics");
-            AddBoolSettingLine(lines, "Allow Skipping Nonskippable", skipNs, "AllowSkippingNonskippable");
-            AddBoolSettingLine(lines, "Skip Cutscenes Without Prompt", skipNs, "SkipCutscenesWithoutPrompt");
-            AddBoolSettingLine(lines, "Instant Scene Fade Ins", skipNs, "InstantSceneFadeIns");
-            AddBoolSettingLine(lines, "Soul Master Phase Transition Skip", skipNs, "SoulMasterPhaseTransitionSkip");
-
-            lines.Add("Miscellaneous:");
-            AddModuleLine(lines, modules, gsModules, "Aggressive GS", "AggressiveGC");
-            AddModuleLine(lines, modules, gsModules, "Unlock All Modes", "UnlockAllModes");
-
-            return lines;
-        }
 
         public static bool IsP5HealthEnabled()
         {
@@ -108,7 +26,7 @@ namespace ReplayLogger
 
             try
             {
-                Type modType = FindType(RootTypeName);
+                Type modType = TypeLookup.FindType(RootTypeName);
                 if (modType == null)
                 {
                     return false;
@@ -136,71 +54,46 @@ namespace ReplayLogger
             }
             catch
             {
-                
             }
 
             return false;
         }
 
-        public static void WriteSettingsWithSeparator(StreamWriter writer, string separator = "---------------------------------------------------")
+        private static bool IsGodhomeQolP5HealthEnabled()
         {
-            if (writer == null)
+            try
             {
-                return;
+                Type modType = TypeLookup.FindType(GodhomeRootTypeName);
+                if (modType == null)
+                {
+                    return false;
+                }
+
+                bool active = GetStaticPropertyBool(modType, "Active") ?? false;
+                if (!active)
+                {
+                    return false;
+                }
+
+                object globalSettings = GetStaticProperty(modType, "GlobalSettings");
+                Dictionary<string, bool> gsModules = GetGlobalModules(globalSettings);
+                if (gsModules.TryGetValue("P5Health", out bool gsEnabled) && gsEnabled)
+                {
+                    return true;
+                }
+
+                var modules = GetModules(GodhomeModuleManagerTypeName);
+                if (modules.TryGetValue("P5Health", out object module) && module != null)
+                {
+                    bool enabled = GetInstanceBool(module, "Enabled") ?? false;
+                    return enabled;
+                }
+            }
+            catch
+            {
             }
 
-            IReadOnlyList<string> lines = GetSettingsLines();
-            if (lines.Count == 0)
-            {
-                return;
-            }
-
-            foreach (string line in lines)
-            {
-                LogWrite.EncryptedLine(writer, line);
-            }
-
-            LogWrite.EncryptedLine(writer, string.Empty);
-            if (!string.IsNullOrEmpty(separator))
-            {
-                LogWrite.EncryptedLine(writer, separator);
-            }
-        }
-
-        private static void AddModuleLine(List<string> lines, IDictionary<string, object> modules, Dictionary<string, bool> gsModules, string label, string moduleName)
-        {
-            string state = "N/A";
-            if (modules != null && modules.TryGetValue(moduleName, out object module) && module != null)
-            {
-                bool enabled = GetInstanceBool(module, "Enabled") ?? false;
-                state = FmtOnOff(enabled);
-            }
-            else if (gsModules != null && gsModules.TryGetValue(moduleName, out bool gsEnabled))
-            {
-                state = FmtOnOff(gsEnabled);
-            }
-
-            lines.Add($"  {label}: {state}");
-        }
-
-        private static void AddBoolSettingLine(List<string> lines, string label, string typeName, string fieldName)
-        {
-            bool? val = GetStaticFieldBool(typeName, fieldName);
-            lines.Add($"  {label}: {FmtOnOff(val)}");
-        }
-
-        private static void AddIntSettingLine(List<string> lines, string label, string typeName, string fieldName)
-        {
-            object val = GetStaticFieldValue(typeName, fieldName);
-            string text = val != null ? Convert.ToString(val, CultureInfo.InvariantCulture) : "N/A";
-            lines.Add($"  {label}: {text}");
-        }
-
-        private static void AddValueSettingLine(List<string> lines, string label, string typeName, string fieldName)
-        {
-            object val = GetStaticFieldValue(typeName, fieldName);
-            string text = val != null ? val.ToString() : "N/A";
-            lines.Add($"  {label}: {text}");
+            return false;
         }
 
         private static IDictionary<string, object> GetModules()
@@ -212,7 +105,7 @@ namespace ReplayLogger
         {
             try
             {
-                Type mgrType = FindType(managerTypeName);
+                Type mgrType = TypeLookup.FindType(managerTypeName);
                 if (mgrType == null)
                 {
                     return new Dictionary<string, object>();
@@ -250,44 +143,6 @@ namespace ReplayLogger
             }
         }
 
-        private static bool IsGodhomeQolP5HealthEnabled()
-        {
-            try
-            {
-                Type modType = FindType(GodhomeRootTypeName);
-                if (modType == null)
-                {
-                    return false;
-                }
-
-                bool active = GetStaticPropertyBool(modType, "Active") ?? false;
-                if (!active)
-                {
-                    return false;
-                }
-
-                object globalSettings = GetStaticProperty(modType, "GlobalSettings");
-                Dictionary<string, bool> gsModules = GetGlobalModules(globalSettings);
-                if (gsModules.TryGetValue("P5Health", out bool gsEnabled) && gsEnabled)
-                {
-                    return true;
-                }
-
-                var modules = GetModules(GodhomeModuleManagerTypeName);
-                if (modules.TryGetValue("P5Health", out object module) && module != null)
-                {
-                    bool enabled = GetInstanceBool(module, "Enabled") ?? false;
-                    return enabled;
-                }
-            }
-            catch
-            {
-                
-            }
-
-            return false;
-        }
-
         private static bool? GetInstanceBool(object instance, string propName)
         {
             try
@@ -300,8 +155,8 @@ namespace ReplayLogger
             }
             catch
             {
-                
             }
+
             return null;
         }
 
@@ -321,36 +176,17 @@ namespace ReplayLogger
             return null;
         }
 
-        private static bool? GetStaticFieldBool(string typeName, string fieldName)
-        {
-            object val = GetStaticFieldValue(typeName, fieldName);
-            if (val is bool b)
-            {
-                return b;
-            }
-            return null;
-        }
-
-        private static object GetStaticFieldValue(string typeName, string fieldName)
+        private static object GetStaticProperty(Type type, string propName)
         {
             try
             {
-                Type t = cachedAssembly?.GetType(typeName) ?? FindType(typeName);
-                if (t == null)
-                {
-                    return null;
-                }
-
-                FieldInfo fi = t.GetField(fieldName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                return fi?.GetValue(null);
+                return type.GetProperty(propName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(null);
             }
             catch
             {
                 return null;
             }
         }
-
-        private static string FmtOnOff(bool? b) => b.HasValue ? (b.Value ? "On" : "Off") : "N/A";
 
         private static Dictionary<string, bool> GetGlobalModules(object globalSettings)
         {
@@ -382,36 +218,9 @@ namespace ReplayLogger
             }
             catch
             {
-                
             }
 
             return result;
-        }
-
-        private static object GetStaticProperty(Type type, string propName)
-        {
-            try
-            {
-                return type.GetProperty(propName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(null);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type t = asm.GetType(fullName, false);
-                if (t != null)
-                {
-                    return t;
-                }
-            }
-
-            return null;
         }
     }
 }

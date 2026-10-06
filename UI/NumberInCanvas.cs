@@ -19,13 +19,13 @@ public class NumberInCanvas
 
     public void NextGeneration(string keyPressed)
     {
-        Seed = CalculateNewSeed(Seed, GetConsistentHashCode(keyPressed));
+        Seed = global::ReplayLogger.SeedMath.CombineSeed(Seed, GetConsistentHashCode(keyPressed));
         GenerateNumberAndColor(Seed);
     }
 
     public void NextGeneration(KeyCode keyCode)
     {
-        Seed = CalculateNewSeed(Seed, GetConsistentHashCode(keyCode));
+        Seed = global::ReplayLogger.SeedMath.CombineSeed(Seed, GetConsistentHashCode(keyCode));
         GenerateNumberAndColor(Seed);
     }
 
@@ -34,7 +34,7 @@ public class NumberInCanvas
         System.Random prng = new System.Random(seed);
 
         Number = prng.Next(10000000, 99999999);
-        Color = new Color((float)prng.NextDouble(), (float)prng.NextDouble(), (float)prng.NextDouble(),0.5f);
+        Color = new Color((float)prng.NextDouble(), (float)prng.NextDouble(), (float)prng.NextDouble(), 0.5f);
 
     }
     private static int GetConsistentHashCode(KeyCode keyCode)
@@ -72,11 +72,6 @@ public class NumberInCanvas
         KeyTextHashCache[str] = hash;
         return hash;
     }
-    private int CalculateNewSeed(int currentSeed, int keyModifier)
-    {
-        return currentSeed * 31 + keyModifier;
-    }
-
 
 
 }

@@ -100,7 +100,7 @@ namespace ReplayLogger
                 return true;
             }
 
-            Type modType = FindType(ModTypeName);
+            Type modType = TypeLookup.FindType(ModTypeName);
             if (modType == null)
             {
                 return false;
@@ -137,20 +137,6 @@ namespace ReplayLogger
                    infiniteHpField != null &&
                    noclipField != null &&
                    keyBindLockField != null;
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = assembly.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
 
         private static bool GetBool(FieldInfo field, object instance)

@@ -22,7 +22,11 @@ namespace ReplayLogger
             "HasStoredStateBeforeP5"
         };
 
-        private readonly List<BossManipulateSnapshot> snapshots = new();
+        private const string ZoteHelperModuleName = "ZoteHelper";
+
+        private readonly List<ModuleTrackingState> trackedStates = new();
+
+        private readonly HashSet<string> unresolvedArenasThisFight = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<TrackedModule>> sceneModules = new(StringComparer.Ordinal);
 
         private Type moduleManagerType;
@@ -31,11 +35,12 @@ namespace ReplayLogger
         private FieldInfo modulesField;
         private bool sceneModulesBuilt;
 
-        public bool HasData => snapshots.Count > 0;
+        public bool HasData => trackedStates.Count > 0;
 
         public void Reset()
         {
-            snapshots.Clear();
+            trackedStates.Clear();
+            unresolvedArenasThisFight.Clear();
         }
 
         public void StartFight(string arenaName, long baseUnixTime)
@@ -45,7 +50,7 @@ namespace ReplayLogger
                 return;
             }
 
-            CaptureSnapshotForArena(arenaName, baseUnixTime);
+            CaptureOrUpdateArena(arenaName, baseUnixTime);
         }
 
         public void Update(string arenaName, long nowUnixTime)
@@ -55,42 +60,49 @@ namespace ReplayLogger
                 return;
             }
 
-            if (HasAnySnapshotForArena(arenaName))
-            {
-                return;
-            }
-
-            CaptureSnapshotForArena(arenaName, nowUnixTime);
+            CaptureOrUpdateArena(arenaName, nowUnixTime);
         }
 
         public void WriteSection(StreamWriter writer)
         {
-            if (writer == null || snapshots.Count == 0)
+            if (writer == null || trackedStates.Count == 0)
             {
                 return;
             }
 
-            List<string> batch = TempObjectPools.RentStringList(16 + snapshots.Count * 8);
+            int hint = 16;
+            for (int i = 0; i < trackedStates.Count; i++)
+            {
+                hint += trackedStates[i].InitialSettings.Count + Math.Max(1, trackedStates[i].Changes.Count) + 4;
+            }
+
+            List<string> batch = TempObjectPools.RentStringList(hint);
             try
             {
                 batch.Add("  Boss Manipulate:");
-                for (int i = 0; i < snapshots.Count; i++)
+                for (int i = 0; i < trackedStates.Count; i++)
                 {
-                    BossManipulateSnapshot snapshot = snapshots[i];
-                    string localTime = DateTimeOffset.FromUnixTimeMilliseconds(snapshot.UnixTime)
-                        .ToLocalTime()
-                        .ToString("dd.MM.yyyy HH:mm:ss.fff", CultureInfo.InvariantCulture);
-
-                    batch.Add($"    Snapshot {i + 1}:");
-                    batch.Add($"      Arena: {snapshot.ArenaName}");
-                    batch.Add($"      Module: {snapshot.ModuleName}");
-                    batch.Add($"      Time: {localTime}");
-                    batch.Add("      Settings:");
-
-                    for (int j = 0; j < snapshot.Settings.Length; j++)
+                    ModuleTrackingState state = trackedStates[i];
+                    batch.Add($"    Initial Arena: {state.ArenaName}");
+                    batch.Add($"    Module: {state.ModuleName}");
+                    batch.Add("    State:");
+                    for (int j = 0; j < state.InitialSettings.Count; j++)
                     {
-                        SettingSnapshot setting = snapshot.Settings[j];
-                        batch.Add($"        {setting.Name}: {setting.Value}");
+                        SettingSnapshot setting = state.InitialSettings[j];
+                        batch.Add($"      {setting.Name}: {setting.Value}");
+                    }
+
+                    batch.Add("    Changes:");
+                    if (state.Changes.Count == 0)
+                    {
+                        batch.Add("      (none)");
+                    }
+                    else
+                    {
+                        for (int j = 0; j < state.Changes.Count; j++)
+                        {
+                            batch.Add($"      {state.Changes[j]}");
+                        }
                     }
                 }
 
@@ -102,9 +114,14 @@ namespace ReplayLogger
             }
         }
 
-        private void CaptureSnapshotForArena(string arenaName, long unixTime)
+        private void CaptureOrUpdateArena(string arenaName, long unixTime)
         {
             if (string.IsNullOrWhiteSpace(arenaName) || IsIgnoredArena(arenaName))
+            {
+                return;
+            }
+
+            if (!TryGetTrackedModulesForScene(arenaName, out List<TrackedModule> tracked))
             {
                 return;
             }
@@ -112,11 +129,6 @@ namespace ReplayLogger
             long timestamp = unixTime > 0
                 ? unixTime
                 : DateTimeOffset.Now.ToUnixTimeMilliseconds();
-
-            if (!TryGetTrackedModulesForScene(arenaName, out List<TrackedModule> tracked))
-            {
-                return;
-            }
 
             for (int i = 0; i < tracked.Count; i++)
             {
@@ -132,62 +144,77 @@ namespace ReplayLogger
                     continue;
                 }
 
-                if (snapshots.Count > 0)
+                ModuleTrackingState state = FindState(arenaName, module.ModuleName);
+                if (state == null)
                 {
-                    BossManipulateSnapshot last = snapshots[snapshots.Count - 1];
-                    if (string.Equals(last.ArenaName, arenaName, StringComparison.Ordinal) &&
-                        string.Equals(last.ModuleName, module.ModuleName, StringComparison.Ordinal) &&
-                        last.UnixTime == timestamp)
-                    {
-                        continue;
-                    }
+                    trackedStates.Add(new ModuleTrackingState(arenaName, module.ModuleName, timestamp, settings));
+                    continue;
                 }
 
-                snapshots.Add(new BossManipulateSnapshot(
-                    arenaName,
-                    module.ModuleName,
-                    timestamp,
-                    settings.ToArray()));
+                DiffSettings(state, settings, timestamp);
             }
         }
 
-        private bool HasAnySnapshotForArena(string arenaName)
+        private ModuleTrackingState FindState(string arenaName, string moduleName)
         {
-            if (string.IsNullOrWhiteSpace(arenaName) || IsIgnoredArena(arenaName))
+            for (int i = 0; i < trackedStates.Count; i++)
             {
-                return false;
-            }
-
-            for (int i = 0; i < snapshots.Count; i++)
-            {
-                if (string.Equals(snapshots[i].ArenaName, arenaName, StringComparison.Ordinal))
+                ModuleTrackingState state = trackedStates[i];
+                if (string.Equals(state.ArenaName, arenaName, StringComparison.Ordinal) &&
+                    string.Equals(state.ModuleName, moduleName, StringComparison.Ordinal))
                 {
-                    return true;
+                    return state;
                 }
             }
 
-            return false;
+            return null;
+        }
+
+        private static void DiffSettings(ModuleTrackingState state, List<SettingSnapshot> newSettings, long now)
+        {
+            List<SettingSnapshot> previous = state.CurrentSettings;
+            int count = Math.Min(previous.Count, newSettings.Count);
+            for (int i = 0; i < count; i++)
+            {
+                if (string.Equals(previous[i].Value, newSettings[i].Value, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                long delta = state.BaseUnixTime > 0 ? now - state.BaseUnixTime : 0;
+                state.Changes.Add($"|{state.ArenaName}|+{delta}|{newSettings[i].Name}: {previous[i].Value} -> {newSettings[i].Value}");
+            }
+
+            state.CurrentSettings = newSettings;
         }
 
         private bool TryGetTrackedModulesForScene(string arenaName, out List<TrackedModule> trackedModules)
         {
             trackedModules = null;
-            if (IsIgnoredArena(arenaName))
+            if (IsIgnoredArena(arenaName) || unresolvedArenasThisFight.Contains(arenaName))
             {
                 return false;
             }
 
             EnsureSceneModules(forceRebuild: false);
-            if (!sceneModules.TryGetValue(arenaName, out trackedModules) || trackedModules == null || trackedModules.Count == 0)
+            if (sceneModules.TryGetValue(arenaName, out trackedModules) && trackedModules != null && trackedModules.Count > 0)
             {
-                EnsureSceneModules(forceRebuild: true);
-                if (!sceneModules.TryGetValue(arenaName, out trackedModules) || trackedModules == null || trackedModules.Count == 0)
-                {
-                    return TryGetExplicitTrackedModulesForScene(arenaName, out trackedModules);
-                }
+                return true;
             }
 
-            return true;
+            EnsureSceneModules(forceRebuild: true);
+            if (sceneModules.TryGetValue(arenaName, out trackedModules) && trackedModules != null && trackedModules.Count > 0)
+            {
+                return true;
+            }
+
+            if (TryGetExplicitTrackedModulesForScene(arenaName, out trackedModules))
+            {
+                return true;
+            }
+
+            unresolvedArenasThisFight.Add(arenaName);
+            return false;
         }
 
         private void EnsureSceneModules(bool forceRebuild)
@@ -221,6 +248,11 @@ namespace ReplayLogger
                 }
 
                 string moduleName = moduleType.Name ?? string.Empty;
+                if (string.Equals(moduleName, ZoteHelperModuleName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 FieldInfo[] settings = ResolveSettingFields(moduleType);
                 if (settings.Length == 0)
                 {
@@ -303,6 +335,11 @@ namespace ReplayLogger
                 }
 
                 string moduleName = foundType.Name ?? string.Empty;
+                if (string.Equals(moduleName, ZoteHelperModuleName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 if (!ContainsAnyToken(moduleName, fallbackNameTokens))
                 {
                     continue;
@@ -648,25 +685,11 @@ namespace ReplayLogger
         {
             if (!moduleManagerResolved)
             {
-                moduleManagerType = FindType(ModuleManagerTypeName);
+                moduleManagerType = TypeLookup.FindType(ModuleManagerTypeName);
                 moduleManagerResolved = true;
             }
 
             return moduleManagerType;
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
 
         private static string FormatSettingName(string rawName)
@@ -686,7 +709,7 @@ namespace ReplayLogger
                     builder.Append(' ');
                 }
 
-                builder.Append(current);
+                builder.Append(i == 0 ? char.ToUpperInvariant(current) : current);
             }
 
             return builder.ToString();
@@ -764,20 +787,23 @@ namespace ReplayLogger
             internal string Value { get; }
         }
 
-        private readonly struct BossManipulateSnapshot
+        private sealed class ModuleTrackingState
         {
-            internal BossManipulateSnapshot(string arenaName, string moduleName, long unixTime, SettingSnapshot[] settings)
+            internal ModuleTrackingState(string arenaName, string moduleName, long baseUnixTime, List<SettingSnapshot> initialSettings)
             {
                 ArenaName = arenaName;
                 ModuleName = moduleName;
-                UnixTime = unixTime;
-                Settings = settings ?? Array.Empty<SettingSnapshot>();
+                BaseUnixTime = baseUnixTime;
+                InitialSettings = initialSettings;
+                CurrentSettings = initialSettings;
             }
 
             internal string ArenaName { get; }
             internal string ModuleName { get; }
-            internal long UnixTime { get; }
-            internal SettingSnapshot[] Settings { get; }
+            internal long BaseUnixTime { get; }
+            internal List<SettingSnapshot> InitialSettings { get; }
+            internal List<SettingSnapshot> CurrentSettings { get; set; }
+            internal List<string> Changes { get; } = new();
         }
     }
 }

@@ -35,11 +35,13 @@ namespace ReplayLogger
         private List<string> capturedPantheonSequence;
         private int capturedPantheonNumber;
         private bool currentPantheonUsesTrueBossRush;
+        private bool currentPantheonUsesRandomOrder;
 
         private long lastUnixTime;
         private long startUnixTime;
 
         private bool isPlayChalange = false;
+        private bool gameplayHooksActive;
         private int currentPantheonNumber;
         private int bossCounter;
 
@@ -58,10 +60,8 @@ namespace ReplayLogger
         private const int KeyLogFlushBatchSize = 50;
         private long lastKeyLogFlushTime;
         private int lastHudElapsedSeconds = -1;
-        private readonly HashSet<KeyCode> pressedKeys = new();
-        private readonly List<KeyCode> pressedKeysBuffer = new(64);
+        private readonly AdaptiveKeyScanner keyScanner = new();
         private const int EnemyColliderBufferInitialSize = 1024;
-        private const int EnemyColliderBufferMaxSize = 32768;
         private const float EnemyLayerMaskRefreshIntervalSeconds = 1f;
         private const float EnemyColliderOverflowWarnIntervalSeconds = 5f;
         private Collider2D[] enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
@@ -71,36 +71,15 @@ namespace ReplayLogger
         private float lastEnemyLayerMaskRefreshTime;
         private readonly Dictionary<GameObject, HealthManager> enemyHealthManagerByGameObject = new(512);
         private readonly List<GameObject> enemyHealthManagerCacheCleanupBuffer = new(64);
-        private const float EnemyHealthCacheCleanupTickSeconds = 0.25f;
-        private const int EnemyHealthCacheCleanupMinSize = 128;
-        private const int EnemyHealthCacheCleanupBatchSize = 64;
         private float lastEnemyHealthCacheCleanupTime;
         private int enemyHealthCacheCleanupCursor;
         private readonly List<GameObject> ownerPathCacheCleanupBuffer = new(128);
-        private const float OwnerPathCacheCleanupTickSeconds = 0.5f;
-        private const int OwnerPathCacheCleanupMinSize = 256;
-        private const int OwnerPathCacheCleanupBatchSize = 128;
         private float lastOwnerPathCacheCleanupTime;
         private int ownerPathCacheCleanupCursor;
         private const float EnemyUpdateIntervalSeconds = 0.1f;
         private const float EnemySeedRetryIntervalSeconds = 0.5f;
         private float lastEnemyUpdateTime;
         private float lastEnemySeedTime;
-        private static readonly string[] HitTargetMemberNames =
-        {
-            "Target",
-            "target",
-            "TargetObject",
-            "targetObject",
-            "TargetCollider",
-            "targetCollider",
-            "Other",
-            "other",
-            "GameObject",
-            "gameObject"
-        };
-        private readonly Dictionary<Type, MemberInfo> hitTargetMemberByType = new();
-        private readonly HashSet<Type> hitTargetMemberMissTypes = new();
 
         private readonly SpeedWarnTracker speedWarnTracker = new();
         private readonly HitWarnTracker hitWarnTracker = new();
@@ -112,6 +91,24 @@ namespace ReplayLogger
         private readonly DebugMenuTracker debugMenuTracker = new();
         private readonly CharmsChangeTracker charmsChangeTracker = new();
         private readonly GodhomeQolTracker godhomeQolTracker = new();
+        private readonly GrubsongSoulGainTracker grubsongSoulGainTracker = new();
+        private readonly DreamNailSoulGainTracker dreamNailSoulGainTracker = new();
+        private readonly SoulSpentTracker soulSpentTracker = new();
+        private readonly WeaversongSoulGainTracker weaversongSoulGainTracker = new();
+
+        private readonly BossPhaseThresholdTracker bossPhaseThresholdTracker = new();
+        private readonly BossSpawnHpTracker bossSpawnHpTracker = new();
+
+        private List<ITrackerLifecycle> LifecycleTrackers() =>
+        [
+            grubsongSoulGainTracker,
+            dreamNailSoulGainTracker,
+            soulSpentTracker,
+            weaversongSoulGainTracker,
+            bossPhaseThresholdTracker,
+            bossSpawnHpTracker
+        ];
+
         private int speedWarnInlineCursor;
         private int hitWarnInlineCursor;
         private int debugModEventsInlineCursor;
@@ -143,6 +140,7 @@ namespace ReplayLogger
         private static readonly string[] HitWarnSectionHeaderLines = { "\n\n", "HitWarn:" };
         private static readonly string[] HitWarnSectionFooterLines = { "\n\n", "---------------------------------------------------" };
         private bool damageSectionStarted;
+        private bool pressedButtonsSectionStarted;
         private bool skipPantheonLogging;
         private float pantheonToastHideAtUnscaledTime;
 
@@ -156,9 +154,7 @@ namespace ReplayLogger
             On.GameManager.Update += CheckPressedKey;
             ModHooks.ApplicationQuitHook += OnApplicationQuit;
             On.QuitToMenu.Start += QuitToMenu_Start;
-            On.BossSceneController.Update += BossSceneController_Update;
-            On.HeroController.FixedUpdate += HeroController_FixedUpdate;
-            On.HealthManager.TakeDamage += HealthManager_TakeDamage;
+
             On.SceneLoad.RecordEndTime += SceneLoad_RecordEndTime;
             On.SpellFluke.DoDamage += SpellFluke_DoDamage;
             On.DamageEnemies.DoDamage += DamageEnemies_DoDamage;
@@ -171,7 +167,6 @@ namespace ReplayLogger
             ModHooks.HitInstanceHook += ModHooks_HitInstanceHook;
             ModHooks.AfterTakeDamageHook += ModHooks_AfterTakeDamageHook;
             ModHooks.BeforePlayerDeadHook += ModHooks_BeforePlayerDeadHook;
-            ModHooks.AfterSavegameLoadHook += OnAfterSavegameLoad;
 
             On.BossSequenceController.FinishLastBossScene += BossSequenceController_FinishLastBossScene;
             On.BossSequenceController.SetupNewSequence += BossSequenceController_SetupNewSequence;
@@ -198,9 +193,50 @@ namespace ReplayLogger
             InitializeRebindListener();
         }
 
-        private void OnAfterSavegameLoad(SaveGameData _)
+        private void EnsureGameplayHooksActive()
         {
-            HardwareFingerprint.Prime();
+            if (gameplayHooksActive)
+            {
+                return;
+            }
+
+            On.HeroController.FixedUpdate += HeroController_FixedUpdate;
+            On.HealthManager.Start += HealthManager_Start;
+            On.HealthManager.TakeDamage += HealthManager_TakeDamage;
+            On.HeroController.SoulGain += HeroController_SoulGain;
+            On.HeroController.TakeDamage += HeroController_TakeDamage;
+            On.EnemyDreamnailReaction.RecieveDreamImpact += EnemyDreamnailReaction_RecieveDreamImpact;
+            On.PlayerData.AddMPCharge += PlayerData_AddMPCharge;
+            On.PlayerData.TakeMP += PlayerData_TakeMP;
+            On.PlayerData.TakeReserveMP += PlayerData_TakeReserveMP;
+            On.HutongGames.PlayMaker.Actions.CallMethod.OnEnter += CallMethod_OnEnter;
+            On.HutongGames.PlayMaker.Actions.CallMethodProper.OnEnter += CallMethodProper_OnEnter;
+            On.HutongGames.PlayMaker.Actions.SendMessage.OnEnter += SendMessage_OnEnter;
+            On.PlayMakerFSM.SendEvent += PlayMakerFSM_SendEvent;
+            gameplayHooksActive = true;
+        }
+
+        private void ReleaseGameplayHooksIfIdle()
+        {
+            if (!gameplayHooksActive || isPlayChalange)
+            {
+                return;
+            }
+
+            On.HeroController.FixedUpdate -= HeroController_FixedUpdate;
+            On.HealthManager.Start -= HealthManager_Start;
+            On.HealthManager.TakeDamage -= HealthManager_TakeDamage;
+            On.HeroController.SoulGain -= HeroController_SoulGain;
+            On.HeroController.TakeDamage -= HeroController_TakeDamage;
+            On.EnemyDreamnailReaction.RecieveDreamImpact -= EnemyDreamnailReaction_RecieveDreamImpact;
+            On.PlayerData.AddMPCharge -= PlayerData_AddMPCharge;
+            On.PlayerData.TakeMP -= PlayerData_TakeMP;
+            On.PlayerData.TakeReserveMP -= PlayerData_TakeReserveMP;
+            On.HutongGames.PlayMaker.Actions.CallMethod.OnEnter -= CallMethod_OnEnter;
+            On.HutongGames.PlayMaker.Actions.CallMethodProper.OnEnter -= CallMethodProper_OnEnter;
+            On.HutongGames.PlayMaker.Actions.SendMessage.OnEnter -= SendMessage_OnEnter;
+            On.PlayMakerFSM.SendEvent -= PlayMakerFSM_SendEvent;
+            gameplayHooksActive = false;
         }
 
         private string isChallengeCompleted = "-";
@@ -299,9 +335,15 @@ namespace ReplayLogger
         {
             route = GetStandardPantheonRoute(pantheonNumber);
             currentPantheonUsesTrueBossRush = false;
+            currentPantheonUsesRandomOrder = false;
             if (route == null)
             {
                 return false;
+            }
+
+            if (GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber))
+            {
+                return TryResolveRandomOrderRoute(pantheonNumber, route, out route);
             }
 
             if (!GodhomeQolRandomPantheonsIntegration.IsTrueBossRushEnabled(pantheonNumber))
@@ -330,6 +372,81 @@ namespace ReplayLogger
             return true;
         }
 
+        private bool TryResolveRandomOrderRoute(int pantheonNumber, List<string> standardRoute, out List<string> route)
+        {
+            if (!CanLogRandomOrder(pantheonNumber, standardRoute, out string reason))
+            {
+                global::ReplayLogger.InternalDiagnostics.Warn(
+                    $"ReplayLogger: rejected GodhomeQoL Random Order route for P{pantheonNumber}: {reason}");
+                route = null;
+                return false;
+            }
+
+            if (RandomOrderRoute.IsStandardOrder(standardRoute, capturedPantheonSequence))
+            {
+                route = standardRoute;
+                return true;
+            }
+
+            currentPantheonUsesRandomOrder = true;
+            route = new List<string>(capturedPantheonSequence);
+            global::ReplayLogger.InternalDiagnostics.Info(
+                $"ReplayLogger: using validated GodhomeQoL Random Order route for P{pantheonNumber}.");
+            return true;
+        }
+
+        private bool CanLogRandomOrder(int pantheonNumber, List<string> standardRoute, out string reason)
+        {
+            if (capturedPantheonNumber != pantheonNumber)
+            {
+                reason = $"the captured sequence belongs to P{capturedPantheonNumber}";
+                return false;
+            }
+
+            return RandomOrderRoute.TryValidate(standardRoute, capturedPantheonSequence, out reason);
+        }
+
+        private bool ShouldSkipRandomizedPantheon(int pantheonNumber)
+        {
+            if (pantheonNumber < 1
+                || pantheonNumber > 5
+                || !GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber))
+            {
+                return false;
+            }
+
+            if (CanLogRandomOrder(pantheonNumber, GetStandardPantheonRoute(pantheonNumber), out string reason))
+            {
+                return false;
+            }
+
+            global::ReplayLogger.InternalDiagnostics.Warn(
+                $"ReplayLogger: Random Order P{pantheonNumber} is not logged: {reason}");
+            return true;
+        }
+
+        private bool IsRandomOrderFirstScene(int pantheonNumber, string targetScene)
+        {
+            return currentPantheonNumber == pantheonNumber
+                && capturedPantheonNumber == pantheonNumber
+                && capturedPantheonSequence != null
+                && capturedPantheonSequence.Count > 0
+                && string.Equals(capturedPantheonSequence[0], targetScene, StringComparison.Ordinal)
+                && GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber);
+        }
+
+        private bool IsPantheonFiveEntry(string targetScene)
+        {
+            return lastScene == "GG_Atrium_Roof"
+                && !string.IsNullOrEmpty(targetScene)
+                && (targetScene.Contains("GG_Vengefly_V") || IsRandomOrderFirstScene(5, targetScene));
+        }
+
+        private string GetPantheonLogName(int pantheonNumber)
+        {
+            return currentPantheonUsesRandomOrder ? $"P{pantheonNumber} Random Order" : $"P{pantheonNumber}";
+        }
+
         private static List<string> GetStandardPantheonRoute(int pantheonNumber)
         {
             return pantheonNumber switch
@@ -343,8 +460,6 @@ namespace ReplayLogger
             };
         }
 
-
-
         private HitInstance ModHooks_HitInstanceHook(HutongGames.PlayMaker.Fsm owner, HitInstance hit)
         {
             if (!isPlayChalange || writer == null)
@@ -357,10 +472,10 @@ namespace ReplayLogger
                 return hit;
             }
 
-            long unixTime = GetCachedFrameUnixTimeOrNow();
+            long unixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string activeSceneName = GetActiveArenaSceneName();
             GameObject ownerObject = owner.GameObject;
-            string ownerName = GetCachedOwnerPath(ownerObject);
+            string ownerName = OwnerPathCache.GetCachedPath(ownerObject, ownerPathByGameObject);
 
             CharmDamageTracker.TrackPlayMakerHit(
                 isPlayChalange,
@@ -401,7 +516,6 @@ namespace ReplayLogger
 
             return hit;
 
-
         }
 
         private int ModHooks_AfterTakeDamageHook(int hazardType, int damageAmount)
@@ -411,7 +525,7 @@ namespace ReplayLogger
                 return damageAmount;
             }
 
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string arena = GameManager.instance?.sceneName ?? lastScene;
             hitWarnTracker.LogDamageEvent(writer, arena, lastUnixTime, nowUnixTime, hazardType, damageAmount);
             return damageAmount;
@@ -424,7 +538,7 @@ namespace ReplayLogger
                 return;
             }
 
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string arena = GameManager.instance?.sceneName ?? lastScene;
             hitWarnTracker.LogDeathEvent(writer, arena, lastUnixTime, nowUnixTime);
         }
@@ -533,6 +647,25 @@ namespace ReplayLogger
             }
         }
 
+        private void HealthManager_Start(On.HealthManager.orig_Start orig, HealthManager self)
+        {
+            orig(self);
+
+            if (!isPlayChalange || self == null)
+            {
+                return;
+            }
+
+            try
+            {
+                bossSpawnHpTracker.Record(self, KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime), lastUnixTime);
+            }
+            catch (Exception e)
+            {
+                global::ReplayLogger.InternalDiagnostics.Error($"PantheonLogger: boss spawn HP record failed: {e.Message}");
+            }
+        }
+
         private void HealthManager_TakeDamage(On.HealthManager.orig_TakeDamage orig, HealthManager self, HitInstance hitInstance)
         {
             string activeSceneName = GetActiveArenaSceneName();
@@ -562,7 +695,7 @@ namespace ReplayLogger
                 damageChangeTracker,
                 activeSceneName,
                 lastUnixTime,
-                GetCachedFrameUnixTimeOrNow(),
+                KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime),
                 hitInstance,
                 self.gameObject);
 
@@ -573,10 +706,354 @@ namespace ReplayLogger
                 maxHp = Math.Max(hpState.maxHP, maxHp);
             }
 
-            // Force one delta write with the exact pre-hit value.
             infoBoss[self] = (maxHp, hpBefore);
             uniqueBossBuffersDirty = true;
-            TryLogTrackedBossHpDelta(GetCachedFrameUnixTimeOrNow());
+            TryLogTrackedBossHpDelta(KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime));
+        }
+
+        private bool insideHeroSoulGain;
+
+        private void HeroController_SoulGain(On.HeroController.orig_SoulGain orig, HeroController self)
+        {
+            bool previous = insideHeroSoulGain;
+            insideHeroSoulGain = isPlayChalange;
+            try
+            {
+                orig(self);
+            }
+            finally
+            {
+                insideHeroSoulGain = previous;
+            }
+        }
+
+        private bool insideGrubsongGain;
+
+        private bool realHitConfirmedThisCall;
+        private bool blockerHitConfirmedThisCall;
+
+        private void PlayMakerFSM_SendEvent(On.PlayMakerFSM.orig_SendEvent orig, PlayMakerFSM self, string eventName)
+        {
+            if (isPlayChalange)
+            {
+                if (string.Equals(eventName, "HeroCtrl-HeroDamaged", StringComparison.Ordinal))
+                {
+                    realHitConfirmedThisCall = true;
+                }
+                else if (string.Equals(eventName, "HeroCtrl-TookBlockerHit", StringComparison.Ordinal))
+                {
+                    blockerHitConfirmedThisCall = true;
+                }
+            }
+
+            orig(self, eventName);
+        }
+
+        private void HeroController_TakeDamage(On.HeroController.orig_TakeDamage orig, HeroController self, GameObject go, CollisionSide damageSide, int damageAmount, int hazardType)
+        {
+            bool previous = insideGrubsongGain;
+            insideGrubsongGain = isPlayChalange;
+
+            bool checkForRealHit = isPlayChalange && writer != null && damageAmount > 0 && self != null;
+            PlayerData dataBefore = checkForRealHit ? PlayerData.instance : null;
+            int healthBefore = dataBefore != null ? dataBefore.health : 0;
+            int healthBlueBefore = dataBefore != null ? dataBefore.healthBlue : 0;
+            int hitsSinceShieldedBefore = 0;
+            bool hasHitsSinceShielded = dataBefore != null && HitWarnTracker.TryGetHitsSinceShielded(self, out hitsSinceShieldedBefore);
+
+            bool previousRealHitConfirmed = realHitConfirmedThisCall;
+            bool previousBlockerHitConfirmed = blockerHitConfirmedThisCall;
+            realHitConfirmedThisCall = false;
+            blockerHitConfirmedThisCall = false;
+
+            try
+            {
+                orig(self, go, damageSide, damageAmount, hazardType);
+            }
+            finally
+            {
+                insideGrubsongGain = previous;
+            }
+
+            bool realHitConfirmed = realHitConfirmedThisCall;
+            bool blockerHitConfirmed = blockerHitConfirmedThisCall;
+            realHitConfirmedThisCall = previousRealHitConfirmed;
+            blockerHitConfirmedThisCall = previousBlockerHitConfirmed;
+
+            if (!checkForRealHit)
+            {
+                return;
+            }
+
+            if (blockerHitConfirmed)
+            {
+                hitWarnTracker.LogInvulnerableHitEvent(
+                    writer,
+                    GetActiveArenaSceneName(),
+                    lastUnixTime,
+                    KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime),
+                    damageAmount,
+                    hazardType,
+                    "Baldur Shell");
+                return;
+            }
+
+            if (realHitConfirmed && dataBefore.health == healthBefore && dataBefore.healthBlue == healthBlueBefore)
+            {
+
+                string reason;
+                if (self.takeNoDamage || HitWarnTracker.IsGodhomeQolInfiniteHpActive())
+                {
+                    reason = "Infinite HP";
+                }
+                else if (hasHitsSinceShielded && hitsSinceShieldedBefore != 0 &&
+                    HitWarnTracker.TryGetHitsSinceShielded(self, out int hitsSinceShieldedAfter) && hitsSinceShieldedAfter == 0)
+                {
+                    reason = "Carefree Melody";
+                }
+                else
+                {
+                    reason = null;
+                }
+
+                hitWarnTracker.LogInvulnerableHitEvent(
+                    writer,
+                    GetActiveArenaSceneName(),
+                    lastUnixTime,
+                    KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime),
+                    damageAmount,
+                    hazardType,
+                    reason);
+            }
+        }
+
+        private bool insideDreamNailSoulGain;
+
+        private void EnemyDreamnailReaction_RecieveDreamImpact(On.EnemyDreamnailReaction.orig_RecieveDreamImpact orig, EnemyDreamnailReaction self)
+        {
+            bool previous = insideDreamNailSoulGain;
+            insideDreamNailSoulGain = isPlayChalange;
+            try
+            {
+                orig(self);
+            }
+            finally
+            {
+                insideDreamNailSoulGain = previous;
+            }
+        }
+
+        private string pendingFsmSoulMethodName;
+        private string pendingFsmSoulSourceLabel;
+        private string pendingFsmSoulRawOwnerPath;
+
+        private void CallMethod_OnEnter(On.HutongGames.PlayMaker.Actions.CallMethod.orig_OnEnter orig, HutongGames.PlayMaker.Actions.CallMethod self)
+        {
+            if (!isPlayChalange || self == null)
+            {
+                orig(self);
+                return;
+            }
+
+            TrackFsmSoulCall(self.methodName?.Value, self.Owner, self.State?.Name, () => orig(self));
+        }
+
+        private void CallMethodProper_OnEnter(On.HutongGames.PlayMaker.Actions.CallMethodProper.orig_OnEnter orig, HutongGames.PlayMaker.Actions.CallMethodProper self)
+        {
+            if (!isPlayChalange || self == null)
+            {
+                orig(self);
+                return;
+            }
+
+            TrackFsmSoulCall(self.methodName?.Value, self.Owner, self.State?.Name, () => orig(self));
+        }
+
+        private void SendMessage_OnEnter(On.HutongGames.PlayMaker.Actions.SendMessage.orig_OnEnter orig, HutongGames.PlayMaker.Actions.SendMessage self)
+        {
+            if (!isPlayChalange || self == null)
+            {
+                orig(self);
+                return;
+            }
+
+            TrackFsmSoulCall(self.functionCall?.FunctionName, self.Owner, self.State?.Name, () => orig(self));
+        }
+
+        private static string ResolveSpellCastName(string stateName)
+        {
+            if (string.IsNullOrEmpty(stateName))
+            {
+                return null;
+            }
+
+            PlayerData data = PlayerData.instance;
+
+            if (stateName.Contains("Fireball"))
+            {
+                if (CharmDamageTracker.IsCharmEquipped((int)Charm.Flukenest))
+                {
+                    return "Flukenest";
+                }
+
+                return data != null && data.GetInt("fireballLevel") >= 2 ? "Shade Soul" : "Vengeful Spirit";
+            }
+
+            if (stateName.Contains("Scream"))
+            {
+                return data != null && data.GetInt("screamLevel") >= 2 ? "Abyss Shriek" : "Howling Wraiths";
+            }
+
+            if (stateName.Contains("Quake") || stateName.StartsWith("Level Check", StringComparison.Ordinal))
+            {
+                return data != null && data.GetInt("quakeLevel") >= 2 ? "Descending Dark" : "Desolate Dive";
+            }
+
+            return null;
+        }
+
+        private void TrackFsmSoulCall(string methodName, GameObject ownerObject, string stateName, Action callOrig)
+        {
+            bool isTrackedSoulMethod =
+                string.Equals(methodName, "AddMPCharge", StringComparison.Ordinal) ||
+                string.Equals(methodName, "TakeMP", StringComparison.Ordinal) ||
+                string.Equals(methodName, "TakeMPQuick", StringComparison.Ordinal) ||
+                string.Equals(methodName, "TakeReserveMP", StringComparison.Ordinal);
+
+            if (!isTrackedSoulMethod)
+            {
+                callOrig();
+                return;
+            }
+
+            string ownerPath = ownerObject?.GetFullPath();
+            string sourceLabel =
+                CharmDamageTracker.IsGlowingWombSource(ownerObject, ownerPath) ? "Glowing Womb" :
+                CharmDamageTracker.IsWeaversongSource(ownerObject, ownerPath) ? "Weaversong" :
+                ResolveSpellCastName(stateName);
+
+            string previousMethodName = pendingFsmSoulMethodName;
+            string previousSourceLabel = pendingFsmSoulSourceLabel;
+            string previousRawOwnerPath = pendingFsmSoulRawOwnerPath;
+            pendingFsmSoulMethodName = methodName;
+            pendingFsmSoulSourceLabel = sourceLabel;
+            pendingFsmSoulRawOwnerPath = ownerPath;
+            try
+            {
+                callOrig();
+            }
+            finally
+            {
+                pendingFsmSoulMethodName = previousMethodName;
+                pendingFsmSoulSourceLabel = previousSourceLabel;
+                pendingFsmSoulRawOwnerPath = previousRawOwnerPath;
+            }
+        }
+
+        private bool PlayerData_AddMPCharge(On.PlayerData.orig_AddMPCharge orig, PlayerData self, int amount)
+        {
+            bool trackAsHit = isPlayChalange && insideHeroSoulGain && self != null && amount > 0;
+            bool trackAsGrubsong = isPlayChalange && insideGrubsongGain && self != null && amount > 0;
+            bool trackAsDreamNail = isPlayChalange && insideDreamNailSoulGain && self != null && amount > 0;
+
+            bool trackAsFsmWeaversong = isPlayChalange && !trackAsHit && !trackAsGrubsong && !trackAsDreamNail &&
+                self != null && amount > 0 &&
+                string.Equals(pendingFsmSoulMethodName, "AddMPCharge", StringComparison.Ordinal) &&
+                string.Equals(pendingFsmSoulSourceLabel, "Weaversong", StringComparison.Ordinal);
+            bool shouldTrack = trackAsHit || trackAsGrubsong || trackAsDreamNail || trackAsFsmWeaversong;
+            int mainBefore = shouldTrack ? self.GetInt("MPCharge") : 0;
+            int reserveBefore = shouldTrack ? self.GetInt("MPReserve") : 0;
+
+            bool result = orig(self, amount);
+
+            if (!shouldTrack || self == null)
+            {
+                return result;
+            }
+
+            int mainDelta = self.GetInt("MPCharge") - mainBefore;
+            int reserveDelta = self.GetInt("MPReserve") - reserveBefore;
+
+            int mainGained = mainDelta == amount ? amount : 0;
+            int reserveGained = mainDelta == 0 && reserveDelta == amount ? amount : 0;
+            if (mainGained == 0 && reserveGained == 0)
+            {
+                return result;
+            }
+
+            string arenaName = GetActiveArenaSceneName();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
+            if (trackAsHit)
+            {
+                godhomeQolTracker.RecordObservedSoulGain(arenaName, lastUnixTime, nowUnixTime, mainGained, reserveGained);
+            }
+            else if (trackAsGrubsong)
+            {
+                grubsongSoulGainTracker.RecordObservedGain(arenaName, lastUnixTime, nowUnixTime, mainGained, reserveGained);
+            }
+            else if (trackAsDreamNail)
+            {
+                dreamNailSoulGainTracker.RecordObservedGain(arenaName, lastUnixTime, nowUnixTime, mainGained, reserveGained);
+            }
+            else
+            {
+                weaversongSoulGainTracker.RecordObservedGain(arenaName, lastUnixTime, nowUnixTime, mainGained, reserveGained);
+            }
+
+            return result;
+        }
+
+        private const int GlowingWombInferredMainCost = 8;
+
+        private string ResolveMainSpendSourceLabel(int amount)
+        {
+            if (pendingFsmSoulSourceLabel != null)
+            {
+                return pendingFsmSoulSourceLabel;
+            }
+
+            if (amount == GlowingWombInferredMainCost && CharmDamageTracker.IsCharmEquipped((int)Charm.GlowingWomb))
+            {
+                return "Glowing Womb (inferred)";
+            }
+
+            return null;
+        }
+
+        private void PlayerData_TakeMP(On.PlayerData.orig_TakeMP orig, PlayerData self, int amount)
+        {
+            orig(self, amount);
+
+            if (!isPlayChalange || self == null)
+            {
+                return;
+            }
+
+            soulSpentTracker.RecordMainSpend(
+                GetActiveArenaSceneName(),
+                lastUnixTime,
+                KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime),
+                ResolveMainSpendSourceLabel(amount),
+                pendingFsmSoulRawOwnerPath,
+                amount);
+        }
+
+        private void PlayerData_TakeReserveMP(On.PlayerData.orig_TakeReserveMP orig, PlayerData self, int amount)
+        {
+            orig(self, amount);
+
+            if (!isPlayChalange || self == null)
+            {
+                return;
+            }
+
+            soulSpentTracker.RecordReserveSpend(
+                GetActiveArenaSceneName(),
+                lastUnixTime,
+                KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime),
+                pendingFsmSoulSourceLabel,
+                pendingFsmSoulRawOwnerPath,
+                amount);
         }
 
         private bool TryResolveHitTargetHealthManager(HitInstance hit, out HealthManager healthManager)
@@ -589,7 +1066,7 @@ namespace ReplayLogger
             }
 
             Type hitType = boxedHit.GetType();
-            object rawTarget = GetCachedHitTargetRaw(boxedHit, hitType);
+            object rawTarget = BossTrackingHelpers.GetCachedHitTargetRaw(boxedHit, hitType);
             if (rawTarget == null)
             {
                 return false;
@@ -601,181 +1078,13 @@ namespace ReplayLogger
                 return healthManager != null;
             }
 
-            if (!TryUnwrapTargetGameObject(rawTarget, out GameObject targetObject))
+            if (!BossTrackingHelpers.TryUnwrapTargetGameObject(rawTarget, out GameObject targetObject))
             {
                 return false;
             }
 
             healthManager = ResolveEnemyHealthManager(targetObject);
             return healthManager != null;
-        }
-
-        private object GetCachedHitTargetRaw(object boxedHit, Type hitType)
-        {
-            if (boxedHit == null || hitType == null)
-            {
-                return null;
-            }
-
-            if (hitTargetMemberByType.TryGetValue(hitType, out MemberInfo cachedMember))
-            {
-                return ReadHitTargetMemberValue(cachedMember, boxedHit);
-            }
-
-            if (hitTargetMemberMissTypes.Contains(hitType))
-            {
-                return null;
-            }
-
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            foreach (string memberName in HitTargetMemberNames)
-            {
-                FieldInfo field = hitType.GetField(memberName, flags);
-                if (field != null)
-                {
-                    object fieldValue = ReadHitTargetMemberValue(field, boxedHit);
-                    if (fieldValue != null)
-                    {
-                        hitTargetMemberByType[hitType] = field;
-                        return fieldValue;
-                    }
-                }
-
-                PropertyInfo property = hitType.GetProperty(memberName, flags);
-                if (property == null || property.GetIndexParameters().Length != 0)
-                {
-                    continue;
-                }
-
-                object propertyValue = ReadHitTargetMemberValue(property, boxedHit);
-                if (propertyValue != null)
-                {
-                    hitTargetMemberByType[hitType] = property;
-                    return propertyValue;
-                }
-            }
-
-            foreach (FieldInfo field in hitType.GetFields(flags))
-            {
-                object fieldValue = ReadHitTargetMemberValue(field, boxedHit);
-                if (IsPotentialHitTargetValue(fieldValue))
-                {
-                    hitTargetMemberByType[hitType] = field;
-                    return fieldValue;
-                }
-            }
-
-            foreach (PropertyInfo property in hitType.GetProperties(flags))
-            {
-                if (property.GetIndexParameters().Length != 0)
-                {
-                    continue;
-                }
-
-                object propertyValue = ReadHitTargetMemberValue(property, boxedHit);
-                if (IsPotentialHitTargetValue(propertyValue))
-                {
-                    hitTargetMemberByType[hitType] = property;
-                    return propertyValue;
-                }
-            }
-
-            hitTargetMemberMissTypes.Add(hitType);
-            return null;
-        }
-
-        private static object ReadHitTargetMemberValue(MemberInfo memberInfo, object boxedHit)
-        {
-            if (memberInfo == null || boxedHit == null)
-            {
-                return null;
-            }
-
-            try
-            {
-                return memberInfo switch
-                {
-                    FieldInfo field => field.GetCachedValue(boxedHit),
-                    PropertyInfo property => property.GetCachedValue(boxedHit),
-                    _ => null
-                };
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static bool TryUnwrapTargetGameObject(object rawTarget, out GameObject targetObject)
-        {
-            return TryExtractGameObject(rawTarget, depth: 2, out targetObject);
-        }
-
-        private static bool IsPotentialHitTargetValue(object value)
-        {
-            return value is GameObject or Transform or Component or HealthManager;
-        }
-
-        private static bool TryExtractGameObject(object value, int depth, out GameObject gameObject)
-        {
-            if (value == null || depth < 0)
-            {
-                gameObject = null;
-                return false;
-            }
-
-            switch (value)
-            {
-                case GameObject directGameObject:
-                    gameObject = directGameObject;
-                    return gameObject != null;
-                case Transform directTransform:
-                    gameObject = directTransform.gameObject;
-                    return gameObject != null;
-                case Component directComponent:
-                    gameObject = directComponent.gameObject;
-                    return gameObject != null;
-            }
-
-            if (depth == 0)
-            {
-                gameObject = null;
-                return false;
-            }
-
-            Type valueType = value.GetType();
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            string[] nestedNames =
-            {
-                "gameObject",
-                "GameObject",
-                "transform",
-                "Transform",
-                "target",
-                "Target",
-                "other",
-                "Other"
-            };
-
-            foreach (string nestedName in nestedNames)
-            {
-                FieldInfo field = valueType.GetField(nestedName, flags);
-                if (field != null && TryExtractGameObject(ReadHitTargetMemberValue(field, value), depth - 1, out gameObject))
-                {
-                    return true;
-                }
-
-                PropertyInfo property = valueType.GetProperty(nestedName, flags);
-                if (property != null &&
-                    property.GetIndexParameters().Length == 0 &&
-                    TryExtractGameObject(ReadHitTargetMemberValue(property, value), depth - 1, out gameObject))
-                {
-                    return true;
-                }
-            }
-
-            gameObject = null;
-            return false;
         }
 
         private bool TryLogTrackedBossHpDelta(long nowUnixTime)
@@ -791,7 +1100,7 @@ namespace ReplayLogger
                 return false;
             }
 
-            EnsureUniqueBossBuffers();
+            BossTrackingHelpers.EnsureUniqueBossBuffers(infoBoss, uniqueBossByGameObject, uniqueBossSet, ref uniqueBossBuffersDirty);
             infoBossKeysBuffer.Clear();
             foreach (HealthManager boss in infoBoss.Keys)
             {
@@ -901,9 +1210,11 @@ namespace ReplayLogger
 
         private void HeroController_FixedUpdate(On.HeroController.orig_FixedUpdate orig, HeroController self)
         {
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             cachedFrameUnixTime = nowUnixTime;
             InvCheck(nowUnixTime);
+
+            bossPhaseThresholdTracker.Update(GetActiveArenaSceneName(), uniqueBossByGameObject.Keys, lastUnixTime, nowUnixTime);
             EnemyUpdate(nowUnixTime);
             orig(self);
         }
@@ -917,7 +1228,7 @@ namespace ReplayLogger
 
             try
             {
-                Type bindableType = FindType("DebugMod.BindableFunctions");
+                Type bindableType = TypeLookup.FindType("DebugMod.BindableFunctions");
                 if (bindableType == null)
                 {
                     return;
@@ -983,7 +1294,7 @@ namespace ReplayLogger
             ReplayLogger logger = Instance;
             if (logger != null && logger.isPlayChalange && logger.writer != null)
             {
-                long nowUnixTime = logger.GetCachedFrameUnixTimeOrNow();
+                long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(logger.cachedFrameUnixTime);
                 logger.debugMenuTracker.LogManualChange(logger.writer, logger.lastScene, logger.lastUnixTime, nowUnixTime, "Cheats/Kill All", null, "Executed");
             }
         }
@@ -994,23 +1305,9 @@ namespace ReplayLogger
             ReplayLogger logger = Instance;
             if (logger != null && logger.isPlayChalange && logger.writer != null)
             {
-                long nowUnixTime = logger.GetCachedFrameUnixTimeOrNow();
+                long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(logger.cachedFrameUnixTime);
                 logger.debugMenuTracker.LogManualChange(logger.writer, logger.lastScene, logger.lastUnixTime, nowUnixTime, "Cheats/Kill Self", null, "Executed");
             }
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = assembly.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
 
         private void MonitorDebugModUi(long nowUnixTime)
@@ -1052,108 +1349,6 @@ namespace ReplayLogger
         private float heroBoxOffStartTime = -1f;
         private Transform cachedHeroTransform;
         private GameObject cachedHeroBoxObject;
-
-        private void RefreshUniqueBossBuffers()
-        {
-            uniqueBossByGameObject.Clear();
-            uniqueBossSet.Clear();
-
-            foreach (HealthManager boss in infoBoss.Keys)
-            {
-                if (boss == null)
-                {
-                    continue;
-                }
-
-                uniqueBossByGameObject[boss.gameObject] = boss;
-            }
-
-            foreach (HealthManager boss in uniqueBossByGameObject.Values)
-            {
-                uniqueBossSet.Add(boss);
-            }
-
-            uniqueBossBuffersDirty = false;
-        }
-
-        private void EnsureUniqueBossBuffers()
-        {
-            if (uniqueBossBuffersDirty)
-            {
-                RefreshUniqueBossBuffers();
-            }
-        }
-
-        private string GetCachedOwnerPath(GameObject ownerObject)
-        {
-            if (ownerObject == null)
-            {
-                return string.Empty;
-            }
-
-            if (ownerPathByGameObject.TryGetValue(ownerObject, out string cachedPath))
-            {
-                return cachedPath ?? string.Empty;
-            }
-
-            string path = ownerObject.GetFullPath();
-            ownerPathByGameObject[ownerObject] = path;
-            return path;
-        }
-
-        private void CleanupOwnerPathCacheIfNeeded(float now)
-        {
-            if (ownerPathByGameObject.Count < OwnerPathCacheCleanupMinSize)
-            {
-                ownerPathCacheCleanupCursor = 0;
-                return;
-            }
-
-            if (now - lastOwnerPathCacheCleanupTime < OwnerPathCacheCleanupTickSeconds)
-            {
-                return;
-            }
-
-            lastOwnerPathCacheCleanupTime = now;
-            ownerPathCacheCleanupBuffer.Clear();
-            int startIndex = ownerPathCacheCleanupCursor;
-            int endIndexExclusive = startIndex + OwnerPathCacheCleanupBatchSize;
-            int index = 0;
-            foreach (var pair in ownerPathByGameObject)
-            {
-                if (index < startIndex)
-                {
-                    index++;
-                    continue;
-                }
-
-                if (index >= endIndexExclusive)
-                {
-                    break;
-                }
-
-                if (pair.Key == null)
-                {
-                    ownerPathCacheCleanupBuffer.Add(pair.Key);
-                }
-
-                index++;
-            }
-
-            foreach (GameObject key in ownerPathCacheCleanupBuffer)
-            {
-                ownerPathByGameObject.Remove(key);
-            }
-
-            if (index < endIndexExclusive)
-            {
-                ownerPathCacheCleanupCursor = 0;
-                return;
-            }
-
-            int remainingCount = ownerPathByGameObject.Count;
-            ownerPathCacheCleanupCursor = endIndexExclusive >= remainingCount ? 0 : endIndexExclusive;
-        }
 
         private HealthManager ResolveEnemyHealthManager(GameObject enemyObject)
         {
@@ -1259,29 +1454,7 @@ namespace ReplayLogger
             }
         }
 
-        private static bool ShouldTrackHealthManager(HealthManager manager)
-        {
-            if (manager == null || manager.gameObject == null || manager.hp <= 0 || manager.isDead)
-            {
-                return false;
-            }
-
-            HeroController hero = HeroController.instance;
-            GameObject heroObject = hero?.gameObject;
-            if (heroObject == null)
-            {
-                return true;
-            }
-
-            if (ReferenceEquals(manager.gameObject, heroObject))
-            {
-                return false;
-            }
-
-            Transform managerRoot = manager.gameObject.transform?.root;
-            Transform heroRoot = heroObject.transform?.root;
-            return managerRoot == null || heroRoot == null || !ReferenceEquals(managerRoot, heroRoot);
-        }
+        private static bool ShouldTrackHealthManager(HealthManager manager) => BossTrackingHelpers.ShouldTrackHealthManager(manager);
 
         private void IncludeEnemyLayer(int layer)
         {
@@ -1291,25 +1464,6 @@ namespace ReplayLogger
             }
 
             enemyScanLayerMask |= 1 << layer;
-        }
-
-        private static int BuildHeroCollisionLayerMask(int heroLayer)
-        {
-            if ((uint)heroLayer >= 32u)
-            {
-                return Physics2D.AllLayers;
-            }
-
-            int mask = 0;
-            for (int layer = 0; layer < 32; layer++)
-            {
-                if (!Physics2D.GetIgnoreLayerCollision(heroLayer, layer))
-                {
-                    mask |= 1 << layer;
-                }
-            }
-
-            return mask != 0 ? mask : Physics2D.AllLayers;
         }
 
         private int ResolveEnemyLayerMask(HeroController hero, float now)
@@ -1331,7 +1485,7 @@ namespace ReplayLogger
                 return enemyScanLayerMask;
             }
 
-            int mask = BuildHeroCollisionLayerMask(hero.gameObject.layer);
+            int mask = BossTrackingHelpers.BuildHeroCollisionLayerMask(hero.gameObject.layer);
 
             foreach (GameObject enemyObject in enemyHealthManagerByGameObject.Keys)
             {
@@ -1358,73 +1512,6 @@ namespace ReplayLogger
             return enemyScanLayerMask;
         }
 
-        private void CleanupEnemyHealthManagerCacheIfNeeded(float now)
-        {
-            if (enemyHealthManagerByGameObject.Count < EnemyHealthCacheCleanupMinSize)
-            {
-                enemyHealthCacheCleanupCursor = 0;
-                return;
-            }
-
-            if (now - lastEnemyHealthCacheCleanupTime < EnemyHealthCacheCleanupTickSeconds)
-            {
-                return;
-            }
-
-            lastEnemyHealthCacheCleanupTime = now;
-            enemyHealthManagerCacheCleanupBuffer.Clear();
-            int startIndex = enemyHealthCacheCleanupCursor;
-            int endIndexExclusive = startIndex + EnemyHealthCacheCleanupBatchSize;
-            int index = 0;
-            foreach (var pair in enemyHealthManagerByGameObject)
-            {
-                if (index < startIndex)
-                {
-                    index++;
-                    continue;
-                }
-
-                if (index >= endIndexExclusive)
-                {
-                    break;
-                }
-
-                if (pair.Key == null || pair.Value == null)
-                {
-                    enemyHealthManagerCacheCleanupBuffer.Add(pair.Key);
-                }
-
-                index++;
-            }
-
-            foreach (GameObject key in enemyHealthManagerCacheCleanupBuffer)
-            {
-                enemyHealthManagerByGameObject.Remove(key);
-            }
-
-            if (index < endIndexExclusive)
-            {
-                enemyHealthCacheCleanupCursor = 0;
-                return;
-            }
-
-            int remainingCount = enemyHealthManagerByGameObject.Count;
-            enemyHealthCacheCleanupCursor = endIndexExclusive >= remainingCount ? 0 : endIndexExclusive;
-        }
-
-        private int CollectEnemyCollidersNonAlloc(Vector2 center, Vector2 size, int layerMask)
-        {
-            int colliderCount = Physics2D.OverlapBoxNonAlloc(center, size, 0f, enemyColliderBuffer, layerMask);
-            while (colliderCount >= enemyColliderBuffer.Length && enemyColliderBuffer.Length < EnemyColliderBufferMaxSize)
-            {
-                int nextSize = Math.Min(enemyColliderBuffer.Length * 2, EnemyColliderBufferMaxSize);
-                enemyColliderBuffer = new Collider2D[nextSize];
-                colliderCount = Physics2D.OverlapBoxNonAlloc(center, size, 0f, enemyColliderBuffer, layerMask);
-            }
-
-            return colliderCount;
-        }
-
         public void InvCheck(long nowUnixTime)
         {
             if (!isPlayChalange) return;
@@ -1449,9 +1536,8 @@ namespace ReplayLogger
              HeroController.instance.damageMode == DamageMode.HAZARD_ONLY ||
              HeroController.instance.damageMode == DamageMode.NO_DAMAGE);
 
-            EnsureUniqueBossBuffers();
+            BossTrackingHelpers.EnsureUniqueBossBuffers(infoBoss, uniqueBossByGameObject, uniqueBossSet, ref uniqueBossBuffersDirty);
             var bossList = uniqueBossByGameObject.Values;
-
 
             if (shouldBeInvincible && !isInvincible)
             {
@@ -1466,10 +1552,10 @@ namespace ReplayLogger
             {
                 isInvincible = false;
                 string hpInfo = BuildTrackedHpInfo(bossList);
-                DamageAnfInv?.Add($"{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {invTimer.ToString("F3")})|");
+                DamageAnfInv?.Add($"{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {invTimer.ToString("F3", CultureInfo.InvariantCulture)})|");
                 if (invTimer > 2.6f)
                 {
-                    string warning = $"|{lastScene}|+{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {invTimer.ToString("F3")})";
+                    string warning = $"|{lastScene}|+{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {invTimer.ToString("F3", CultureInfo.InvariantCulture)})";
 
                     InvWarn?.Add(warning);
                 }
@@ -1492,7 +1578,7 @@ namespace ReplayLogger
                 return;
             }
 
-            GameObject heroBoxObject = ResolveHeroBoxObject(hero);
+            GameObject heroBoxObject = BossTrackingHelpers.ResolveHeroBoxObject(hero, ref cachedHeroTransform, ref cachedHeroBoxObject);
             int heroBoxActive = heroBoxObject != null ? (heroBoxObject.activeInHierarchy ? 1 : 0) : -1;
 
             if (!hasHeroBoxState)
@@ -1512,37 +1598,12 @@ namespace ReplayLogger
             }
         }
 
-        private GameObject ResolveHeroBoxObject(HeroController hero)
-        {
-            if (hero == null)
-            {
-                cachedHeroTransform = null;
-                cachedHeroBoxObject = null;
-                return null;
-            }
-
-            Transform heroTransform = hero.transform;
-            if (cachedHeroTransform != heroTransform)
-            {
-                cachedHeroTransform = heroTransform;
-                cachedHeroBoxObject = null;
-            }
-
-            if (cachedHeroBoxObject == null)
-            {
-                Transform heroBoxTransform = heroTransform.Find("HeroBox");
-                cachedHeroBoxObject = heroBoxTransform != null ? heroBoxTransform.gameObject : null;
-            }
-
-            return cachedHeroBoxObject;
-        }
-
         private void WriteHeroBoxActiveWarning(int currentState, IEnumerable<HealthManager> bossList, int? previousState, long nowUnixTime)
         {
             string hpInfo = BuildHeroBoxHpInfo(bossList);
             string message = previousState.HasValue
-                ? $"{FormatState(previousState.Value)} -> {FormatState(currentState)}"
-                : FormatState(currentState);
+                ? $"{BossTrackingHelpers.FormatState(previousState.Value)} -> {BossTrackingHelpers.FormatState(currentState)}"
+                : BossTrackingHelpers.FormatState(currentState);
             string warning = $"|{lastScene}|+{nowUnixTime - lastUnixTime}{hpInfo}|HeroBoxActive: {message}";
             InvWarn?.Add(warning);
         }
@@ -1553,7 +1614,7 @@ namespace ReplayLogger
             {
                 return;
             }
-            EnsureUniqueBossBuffers();
+            BossTrackingHelpers.EnsureUniqueBossBuffers(infoBoss, uniqueBossByGameObject, uniqueBossSet, ref uniqueBossBuffersDirty);
             string hpInfo = BuildHeroBoxHpInfo(uniqueBossByGameObject.Values);
             float duration = Time.unscaledTime - heroBoxOffStartTime;
             string warning = $"|{lastScene}|+{nowUnixTime - lastUnixTime}{hpInfo}|HeroBoxActive Off Duration: {duration.ToString("F3", CultureInfo.InvariantCulture)}s";
@@ -1567,9 +1628,9 @@ namespace ReplayLogger
                 return;
             }
 
-            EnsureUniqueBossBuffers();
+            BossTrackingHelpers.EnsureUniqueBossBuffers(infoBoss, uniqueBossByGameObject, uniqueBossSet, ref uniqueBossBuffersDirty);
             string hpInfo = BuildTrackedHpInfo(uniqueBossByGameObject.Values);
-            string duration = invTimer.ToString("F3");
+            string duration = invTimer.ToString("F3", CultureInfo.InvariantCulture);
             string invLine = $"{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {duration})|";
             DamageAnfInv?.Add(invLine);
             InvWarn?.Add($"|{lastScene}|+{nowUnixTime - lastUnixTime}{hpInfo}|(INV OFF, {duration})");
@@ -1628,16 +1689,6 @@ namespace ReplayLogger
             return hpInfoBuilder.ToString();
         }
 
-        private static string FormatState(int state)
-        {
-            return state switch
-            {
-                1 => "On",
-                0 => "Off",
-                _ => "N/A"
-            };
-        }
-
         bool isChange;
 
         public void EnemyUpdate(long nowUnixTime)
@@ -1662,8 +1713,8 @@ namespace ReplayLogger
             }
             lastEnemyUpdateTime = now;
             CleanupTrackedBossesForScene(sceneName);
-            CleanupEnemyHealthManagerCacheIfNeeded(now);
-            CleanupOwnerPathCacheIfNeeded(now);
+            BossTrackingHelpers.CleanupEnemyHealthManagerCacheIfNeeded(enemyHealthManagerByGameObject, enemyHealthManagerCacheCleanupBuffer, ref lastEnemyHealthCacheCleanupTime, ref enemyHealthCacheCleanupCursor, now);
+            OwnerPathCache.CleanupIfNeeded(ownerPathByGameObject, ownerPathCacheCleanupBuffer, ref lastOwnerPathCacheCleanupTime, ref ownerPathCacheCleanupCursor, now);
             if (infoBoss.Count == 0)
             {
                 SeedTrackedBossesFromActiveScene(now);
@@ -1673,7 +1724,7 @@ namespace ReplayLogger
             Vector2 searchSize = Vector2.one * searchRadius;
             int enemyLayer = ResolveEnemyLayerMask(hero, now);
 
-            int colliderCount = CollectEnemyCollidersNonAlloc(hero.transform.position, searchSize, enemyLayer);
+            int colliderCount = BossTrackingHelpers.CollectEnemyCollidersNonAlloc(ref enemyColliderBuffer, hero.transform.position, searchSize, enemyLayer);
             int processedColliderCount = Math.Min(colliderCount, enemyColliderBuffer.Length);
             bool isSaturated = colliderCount >= enemyColliderBuffer.Length;
             if (isSaturated)
@@ -1715,7 +1766,7 @@ namespace ReplayLogger
 
             hpInfoBuilder.Clear();
 
-            EnsureUniqueBossBuffers();
+            BossTrackingHelpers.EnsureUniqueBossBuffers(infoBoss, uniqueBossByGameObject, uniqueBossSet, ref uniqueBossBuffersDirty);
             infoBossKeysBuffer.Clear();
             foreach (HealthManager boss in infoBoss.Keys)
             {
@@ -1779,22 +1830,13 @@ namespace ReplayLogger
                 uniqueBossBuffersDirty = true;
             }
 
-
         }
-
-        private void BossSceneController_Update(On.BossSceneController.orig_Update orig, BossSceneController self)
-        {
-            orig(self);
-        }
-
 
         private IEnumerator QuitToMenu_Start(On.QuitToMenu.orig_Start orig, QuitToMenu self)
         {
             skipPantheonLogging = false;
-            if (!isManualLogging)
-            {
-                Close();
-            }
+
+            Close();
             return orig(self);
         }
 
@@ -1835,6 +1877,7 @@ namespace ReplayLogger
                         capturedPantheonNumber = 0;
                         capturedPantheonSequence = null;
                         currentPantheonUsesTrueBossRush = false;
+                        currentPantheonUsesRandomOrder = false;
                     }
 
                     lastScene = self.TargetSceneName;
@@ -1845,7 +1888,7 @@ namespace ReplayLogger
                 bool isEnding = isPlayChalange && self.TargetSceneName.Contains("GG_End_Seq");
                 if (isPlayChalange && writer != null)
                 {
-                    FlushKeyLogBufferIfNeeded(GetCachedFrameUnixTimeOrNow(), force: true);
+                    FlushKeyLogBufferIfNeeded(KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime), force: true);
                     FlushBufferedSectionsForTransition();
                     writer.Flush();
                     if (!isEnding)
@@ -1863,15 +1906,15 @@ namespace ReplayLogger
                     Close();
                 }
 
-                if (self.TargetSceneName.Contains("GG_Boss_Door") || (self.TargetSceneName.Contains("GG_Vengefly_V") && lastScene == "GG_Atrium_Roof"))
+                if (self.TargetSceneName.Contains("GG_Boss_Door") || IsPantheonFiveEntry(self.TargetSceneName))
                 {
                     int pantheonNumber = currentPantheonNumber;
-                    if (pantheonNumber == 0 && self.TargetSceneName.Contains("GG_Vengefly_V") && lastScene == "GG_Atrium_Roof")
+                    if (pantheonNumber == 0 && IsPantheonFiveEntry(self.TargetSceneName))
                     {
                         pantheonNumber = 5;
                     }
 
-                    if (pantheonNumber > 0 && GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber))
+                    if (pantheonNumber > 0 && ShouldSkipRandomizedPantheon(pantheonNumber))
                     {
                         skipPantheonLogging = true;
                         lastScene = self.TargetSceneName;
@@ -1882,10 +1925,11 @@ namespace ReplayLogger
                     startUnixTime = lastUnixTime;
                     int curentPlayTime = (int)((PlayerData.instance?.playTime ?? 0f) * 100);
                     isPlayChalange = true;
+                    EnsureGameplayHooksActive();
 
                     try
                     {
-                        
+
                         activeEncryptionSession = KeyloggerLogEncryption.CreateSession();
                         lastString = activeEncryptionSession.SessionKeyBlob;
                         currentNameLog = Path.Combine(dllDir, $"KeyLog{DateTime.UtcNow.Ticks}.log");
@@ -1906,55 +1950,58 @@ namespace ReplayLogger
                         hitWarnTracker.Reset();
                         bool initialDebugUiVisible = DebugModIntegration.TryGetUiVisible(out bool visible) && visible;
                         debugModEventsTracker.Reset(initialDebugUiVisible);
-	                        debugMenuTracker.Reset(initialDebugUiVisible);
-	                          debugHotkeysTracker.InitializeBindings();
-	                          keyLogBuffer.Clear();
-	                          lastKeyLogFlushTime = 0;
-                lastHudElapsedSeconds = -1;
-	                          pressedKeys.Clear();
-	                          pressedKeysBuffer.Clear();
-	                          enemyColliderBufferOverflowLogged = false;
-	                          lastEnemyColliderOverflowWarningTime = 0f;
-	                          enemyScanLayerMask = 0;
-	                          lastEnemyLayerMaskRefreshTime = 0f;
-	                          enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
-	                          enemyHealthManagerByGameObject.Clear();
-		                          enemyHealthManagerCacheCleanupBuffer.Clear();
-		                          lastEnemyHealthCacheCleanupTime = 0f;
-                                  lastEnemySeedTime = 0f;
-			                          enemyHealthCacheCleanupCursor = 0;
-		                          infoBoss.Clear();
-			                          ownerPathByGameObject.Clear();
-			                          ownerPathCacheCleanupBuffer.Clear();
-			                          lastOwnerPathCacheCleanupTime = 0f;
-			                          ownerPathCacheCleanupCursor = 0;
-			                          uniqueBossByGameObject.Clear();
-	                          uniqueBossSet.Clear();
-	                          infoBossKeysBuffer.Clear();
-	                          uniqueBossBuffersDirty = true;
-	                          hasHeroBoxState = false;
-	                          lastHeroBoxActive = -1;
-	                          heroBoxOffStartTime = -1f;
-	                          cachedHeroTransform = null;
-	                          cachedHeroBoxObject = null;
-                              isInvincible = false;
-                              invTimer = 0f;
-	                          damageSectionStarted = false;
-	                          damageChangeTracker.Reset();
-                              CharmDamageTracker.ResetHints();
-	                          charmsChangeTracker.Reset();
-                          ResetInlineTimelineCursors();
-	                        CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
+                        debugMenuTracker.Reset(initialDebugUiVisible);
+                        debugHotkeysTracker.InitializeBindings();
+                        keyLogBuffer.Clear();
+                        lastKeyLogFlushTime = 0;
+                        lastHudElapsedSeconds = -1;
+                        keyScanner.Clear();
+                        enemyColliderBufferOverflowLogged = false;
+                        lastEnemyColliderOverflowWarningTime = 0f;
+                        enemyScanLayerMask = 0;
+                        lastEnemyLayerMaskRefreshTime = 0f;
+                        enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
+                        enemyHealthManagerByGameObject.Clear();
+                        enemyHealthManagerCacheCleanupBuffer.Clear();
+                        lastEnemyHealthCacheCleanupTime = 0f;
+                        lastEnemySeedTime = 0f;
+                        enemyHealthCacheCleanupCursor = 0;
+                        infoBoss.Clear();
+                        ownerPathByGameObject.Clear();
+                        ownerPathCacheCleanupBuffer.Clear();
+                        lastOwnerPathCacheCleanupTime = 0f;
+                        ownerPathCacheCleanupCursor = 0;
+                        uniqueBossByGameObject.Clear();
+                        uniqueBossSet.Clear();
+                        infoBossKeysBuffer.Clear();
+                        uniqueBossBuffersDirty = true;
+                        hasHeroBoxState = false;
+                        lastHeroBoxActive = -1;
+                        heroBoxOffStartTime = -1f;
+                        cachedHeroTransform = null;
+                        cachedHeroBoxObject = null;
+                        isInvincible = false;
+                        invTimer = 0f;
+                        damageSectionStarted = false;
+                        pressedButtonsSectionStarted = false;
+                        damageChangeTracker.Reset();
+                        CharmDamageTracker.ResetHints();
+                        charmsChangeTracker.Reset();
+                        foreach (ITrackerLifecycle lifecycleTracker in LifecycleTrackers())
+                        {
+                            lifecycleTracker.Reset();
+                        }
+                        ResetInlineTimelineCursors();
+                        CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
                         LogWrite.EncryptedLine(writer, CoreSessionLogger.BuildEquippedCharmsLine());
                         CoreSessionLogger.WriteEncryptedSkillLines(writer, "---------------------------------------------------");
-                          speedWarnTracker.LogInitial(writer, self.TargetSceneName, lastUnixTime);
-                          InitializeDebugModHooks();
-                          godhomeQolTracker.Reset();
-                          godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false, includeBossChallenge: false);
-                          cachedFrameUnixTime = lastUnixTime;
-  
-  
-                      }
+                        speedWarnTracker.LogInitial(writer, self.TargetSceneName, lastUnixTime);
+                        InitializeDebugModHooks();
+                        godhomeQolTracker.Reset();
+                        godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false, includeBossChallenge: true);
+                        cachedFrameUnixTime = lastUnixTime;
+
+                    }
                     catch (Exception e)
                     {
                         global::ReplayLogger.InternalDiagnostics.Error("ReplayLogger: failed to start pantheon logging: " + e.Message);
@@ -1969,7 +2016,7 @@ namespace ReplayLogger
                     customCanvas = new CustomCanvas(new NumberInCanvas(seed), new LoadingSprite(lastString));
                     pantheonToastHideAtUnscaledTime = 0f;
 
-                    if (self.TargetSceneName.Contains("GG_Vengefly_V") && lastScene == "GG_Atrium_Roof")
+                    if (IsPantheonFiveEntry(self.TargetSceneName))
                     {
                         if (!TryResolvePantheonRoute(5, out List<string> route))
                         {
@@ -1980,7 +2027,7 @@ namespace ReplayLogger
                             return;
                         }
 
-                        currentPanteon = ("P5", route);
+                        currentPanteon = (GetPantheonLogName(5), route);
                         bossCounter++;
 
                         string startLine = $"{dataTime}|{lastUnixTime}|{self.TargetSceneName}| {bossCounter}*";
@@ -2022,8 +2069,6 @@ namespace ReplayLogger
                         }
                     }
 
-
-
                 }
                 else if (isPlayChalange)
                 {
@@ -2038,8 +2083,13 @@ namespace ReplayLogger
                             pantheonNumber = 3;
                         if (self.TargetSceneName == Panteons.P4[0])
                             pantheonNumber = 4;
+                        if (pantheonNumber == 0
+                            && currentPantheonNumber >= 1
+                            && currentPantheonNumber <= 4
+                            && IsRandomOrderFirstScene(currentPantheonNumber, self.TargetSceneName))
+                            pantheonNumber = currentPantheonNumber;
 
-                        if (pantheonNumber > 0 && GodhomeQolRandomPantheonsIntegration.IsPantheonRandomized(pantheonNumber))
+                        if (pantheonNumber > 0 && ShouldSkipRandomizedPantheon(pantheonNumber))
                         {
                             skipPantheonLogging = true;
                             AbortPantheonLogging();
@@ -2057,15 +2107,14 @@ namespace ReplayLogger
                             return;
                         }
 
-                        currentPanteon = ($"P{pantheonNumber}", route);
+                        currentPanteon = (GetPantheonLogName(pantheonNumber), route);
                     }
                     else if (currentPanteon.list != null)
                     {
 
                         int targetIndex = currentPanteon.list.IndexOf((self.TargetSceneName));
                         int lastSceneIndex = currentPanteon.list.IndexOf(lastScene);
-                        godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false, includeBossChallenge: false);
-
+                        godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false, includeBossChallenge: true);
 
                         if (targetIndex == -1 || (lastSceneIndex != -1 && !(IsValidNextScene(currentPanteon.list, lastSceneIndex, self.TargetSceneName))))
                         {
@@ -2078,7 +2127,6 @@ namespace ReplayLogger
                         {
                             currentPanteon.list?.Remove(lastScene);
                         }
-
 
                     }
                     bool isSkippedScene = SkipScenes.Contains(self.TargetSceneName);
@@ -2188,8 +2236,6 @@ namespace ReplayLogger
             hitWarnBuffer = null;
 
             AheSettingsManager.Reset();
-            ZoteSettingsManager.Reset();
-            CollectorPhasesSettingsManager.Reset();
             CustomKnightSettingsManager.Reset();
             godhomeQolTracker.Reset();
             debugHotkeysTracker.Reset();
@@ -2197,33 +2243,33 @@ namespace ReplayLogger
             damageChangeTracker.Reset();
             CharmDamageTracker.ResetHints();
             hitWarnTracker.Reset();
+            bossPhaseThresholdTracker.Reset();
             ResetInlineTimelineCursors();
 
             keyLogBuffer.Clear();
             lastKeyLogFlushTime = 0;
             lastHudElapsedSeconds = -1;
-		            pressedKeys.Clear();
-		            pressedKeysBuffer.Clear();
-		            enemyColliderBufferOverflowLogged = false;
-	            lastEnemyColliderOverflowWarningTime = 0f;
-	            enemyScanLayerMask = 0;
-	            lastEnemyLayerMaskRefreshTime = 0f;
+            keyScanner.Clear();
+            enemyColliderBufferOverflowLogged = false;
+            lastEnemyColliderOverflowWarningTime = 0f;
+            enemyScanLayerMask = 0;
+            lastEnemyLayerMaskRefreshTime = 0f;
             enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
-	            enemyHealthManagerByGameObject.Clear();
-	            enemyHealthManagerCacheCleanupBuffer.Clear();
-			            lastEnemyHealthCacheCleanupTime = 0f;
-                        lastEnemySeedTime = 0f;
-			            enemyHealthCacheCleanupCursor = 0;
-                infoBoss.Clear();
-                ownerPathByGameObject.Clear();
-                ownerPathCacheCleanupBuffer.Clear();
-                lastOwnerPathCacheCleanupTime = 0f;
-                ownerPathCacheCleanupCursor = 0;
-                uniqueBossByGameObject.Clear();
-	            uniqueBossSet.Clear();
-	            infoBossKeysBuffer.Clear();
-	            uniqueBossBuffersDirty = true;
-	            hasHeroBoxState = false;
+            enemyHealthManagerByGameObject.Clear();
+            enemyHealthManagerCacheCleanupBuffer.Clear();
+            lastEnemyHealthCacheCleanupTime = 0f;
+            lastEnemySeedTime = 0f;
+            enemyHealthCacheCleanupCursor = 0;
+            infoBoss.Clear();
+            ownerPathByGameObject.Clear();
+            ownerPathCacheCleanupBuffer.Clear();
+            lastOwnerPathCacheCleanupTime = 0f;
+            ownerPathCacheCleanupCursor = 0;
+            uniqueBossByGameObject.Clear();
+            uniqueBossSet.Clear();
+            infoBossKeysBuffer.Clear();
+            uniqueBossBuffersDirty = true;
+            hasHeroBoxState = false;
             lastHeroBoxActive = -1;
             heroBoxOffStartTime = -1f;
             cachedHeroTransform = null;
@@ -2231,16 +2277,19 @@ namespace ReplayLogger
             isInvincible = false;
             invTimer = 0f;
             damageSectionStarted = false;
+            pressedButtonsSectionStarted = false;
             DisposeDebugModHooks();
 
             isChallengeCompleted = "-";
             bossCounter = 0;
             startUnixTime = 0;
             isPlayChalange = false;
+            ReleaseGameplayHooksIfIdle();
             currentPantheonNumber = 0;
             capturedPantheonNumber = 0;
             capturedPantheonSequence = null;
             currentPantheonUsesTrueBossRush = false;
+            currentPantheonUsesRandomOrder = false;
             cachedFrameUnixTime = 0;
 
             customCanvas?.DestroyCanvas();
@@ -2262,39 +2311,34 @@ namespace ReplayLogger
                 return;
             }
 
-            if (!damageSectionStarted)
-            {
-                LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE INV and PRESSED BUTTONS------------------------\n");
-                damageSectionStarted = true;
-            }
-
             if (hasPressedButtons)
             {
+                if (!pressedButtonsSectionStarted)
+                {
+                    LogWrite.EncryptedLine(writer, "\n------------------------PRESSED BUTTONS------------------------\n");
+                    pressedButtonsSectionStarted = true;
+                }
+
                 pressedButtonsLog.WriteEncryptedLines(writer);
                 pressedButtonsLog.Clear();
-                WriteBlockSeparatorWithSpacing(writer);
+                CoreSessionLogger.WriteSeparatorWithSpacing(writer);
             }
 
             if (hasDamageInv)
             {
+                if (!damageSectionStarted)
+                {
+                    LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE AND WARNINGS------------------------\n");
+                    damageSectionStarted = true;
+                }
+
                 DamageAnfInv.WriteEncryptedLines(writer);
                 DamageAnfInv.Clear();
-                WriteBlockSeparatorWithSpacing(writer);
+                CoreSessionLogger.WriteSeparatorWithSpacing(writer);
             }
 
         }
 
-        private static void WriteBlockSeparatorWithSpacing(StreamWriter writer)
-        {
-            if (writer == null)
-            {
-                return;
-            }
-
-            LogWrite.EncryptedLine(writer, string.Empty);
-            CoreSessionLogger.WriteSeparator(writer);
-            LogWrite.EncryptedLine(writer, string.Empty);
-        }
         private bool IsValidNextScene(List<string> panteonList, int lastSceneIndex, string targetSceneName)
         {
             int nextIndex = lastSceneIndex + 1;
@@ -2363,28 +2407,34 @@ namespace ReplayLogger
 
                 long endTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
                 string sessionTime = ConvertUnixTimeToTimeString((long)(Time.realtimeSinceStartup * 1000f));
-                FlushKeyLogBufferIfNeeded(GetCachedFrameUnixTimeOrNow(), force: true);
+                FlushKeyLogBufferIfNeeded(KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime), force: true);
                 AppendActiveInvDurationWarning(endTime);
                 bool wrotePressedButtons = pressedButtonsLog != null && pressedButtonsLog.HasContent;
                 bool wroteDamageInv = DamageAnfInv != null && DamageAnfInv.HasContent;
                 if (wrotePressedButtons || wroteDamageInv)
                 {
-                    if (!damageSectionStarted)
-                    {
-                        LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE INV and PRESSED BUTTONS------------------------\n");
-                        damageSectionStarted = true;
-                    }
-
                     if (wrotePressedButtons)
                     {
+                        if (!pressedButtonsSectionStarted)
+                        {
+                            LogWrite.EncryptedLine(writer, "\n------------------------PRESSED BUTTONS------------------------\n");
+                            pressedButtonsSectionStarted = true;
+                        }
+
                         pressedButtonsLog.WriteEncryptedLines(writer);
-                        WriteBlockSeparatorWithSpacing(writer);
+                        CoreSessionLogger.WriteSeparatorWithSpacing(writer);
                     }
 
                     if (wroteDamageInv)
                     {
+                        if (!damageSectionStarted)
+                        {
+                            LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE AND WARNINGS------------------------\n");
+                            damageSectionStarted = true;
+                        }
+
                         DamageAnfInv.WriteEncryptedLines(writer);
-                        WriteBlockSeparatorWithSpacing(writer);
+                        CoreSessionLogger.WriteSeparatorWithSpacing(writer);
                     }
                 }
                 LogWrite.EncryptedLine(writer, $"StartTime: {ConvertUnixTimeToDateTimeString(startUnixTime)}, EndTime: {ConvertUnixTimeToDateTimeString(endTime)}, TimeInPlay: {ConvertUnixTimeToTimeString(endTime - startUnixTime)}, SessionTime: {sessionTime}");
@@ -2414,30 +2464,31 @@ namespace ReplayLogger
 
                 DamageChangeTracker.WriteSection(writer, damageChangeTracker);
                 charmsChangeTracker.Write(writer);
+                foreach (ITrackerLifecycle lifecycleTracker in LifecycleTrackers())
+                {
+                    lifecycleTracker.Write(writer);
+                }
 
                 AheSettingsManager.WriteSettingsWithSeparator(writer);
-                ZoteSettingsManager.WriteSettingsWithSeparator(writer);
-                CollectorPhasesSettingsManager.WriteSettingsWithSeparator(writer);
-                SafeGodseekerQolIntegration.WriteSettingsWithSeparator(writer);
                 CustomKnightSettingsManager.WriteSettingsWithSeparator(writer);
                 godhomeQolTracker.WriteSection(writer);
                 DebugModEventsWriter.Write(writer, debugModEventsTracker.Events);
                 DebugHotKeysWriter.Write(writer, debugHotkeysTracker.Bindings, debugHotkeysTracker.Activations);
                 debugMenuTracker.WriteSection(writer);
                 CoreSessionLogger.WriteSeparator(writer);
-                CoreSessionLogger.WriteNoBlurSettings(writer);
-                CoreSessionLogger.WriteCustomizableAbilitiesSettings(writer);
                 CoreSessionLogger.WriteControlSettings(writer);
-                LogWrite.EncryptedLine(writer, "\n" + isChallengeCompleted + "\n");
+                if (!manualClose)
+                {
 
-                HardwareFingerprint.WriteEncryptedLine(writer);
+                    LogWrite.EncryptedLine(writer, "\n" + isChallengeCompleted + "\n");
+                }
 
                 LogWrite.Raw(writer, lastString);
                 writer.Flush();
                 writer.Close();
                 writer = null;
 
-                string pantheonName = string.IsNullOrWhiteSpace(currentPanteon.name) ? "Unknown" : currentPanteon.name;
+                string pantheonName = PathSanitizer.SanitizeSegment(currentPanteon.name, "Unknown");
                 string logFolderName = manualClose ? "Manual Logs" : pantheonName;
                 string logDir = Path.Combine(dllDir, logFolderName);
                 if (!Directory.Exists(logDir))
@@ -2446,16 +2497,21 @@ namespace ReplayLogger
                 }
 
                 string dataTimeNow = ConvertUnixTimeToFileSuffix(lastUnixTime);
-                string namePrefix = manualClose
-                    ? (string.IsNullOrWhiteSpace(manualStartScene) ? "Manual" : manualStartScene)
-                    : (string.IsNullOrWhiteSpace(isChallengeCompleted) || isChallengeCompleted == "-" ? pantheonName : $"{isChallengeCompleted}{pantheonName}");
-                string newPath = Path.Combine(logDir, $"{namePrefix} ({dataTimeNow}).log");
 
-                string recordName = manualClose ? namePrefix : pantheonName;
+                string namePrefix = manualClose
+                    ? PathSanitizer.SanitizeSegment(manualStartScene, "Manual")
+                    : PathSanitizer.SanitizeSegment(
+                        string.IsNullOrWhiteSpace(isChallengeCompleted) || isChallengeCompleted == "-" ? pantheonName : $"{isChallengeCompleted}{pantheonName}",
+                        pantheonName);
+
+                string runFolderName = $"{namePrefix} ({dataTimeNow})";
+                string runDir = Path.Combine(logDir, runFolderName);
+                Directory.CreateDirectory(runDir);
+                string newPath = Path.Combine(runDir, $"{runFolderName}.log");
+
                 if (File.Exists(currentNameLog))
                 {
-                    File.Move(currentNameLog, newPath);
-                    SavedLogTracker.Record(newPath, manualClose ? "Manual" : "Pantheons", recordName, "None");
+                    FileMoveHelper.MoveSafely(currentNameLog, newPath);
                     string toastText = Path.GetFileName(newPath);
                     SavedLogToast.Record(toastText);
                     pantheonToastHideAtUnscaledTime = Time.unscaledTime + hudToastSeconds;
@@ -2472,7 +2528,8 @@ namespace ReplayLogger
             }
             catch (Exception ex)
             {
-                global::ReplayLogger.InternalDiagnostics.Info(ex.Message);
+
+                global::ReplayLogger.InternalDiagnostics.Error($"ReplayLogger: failed to finalize/save log '{currentNameLog}': {ex.Message}");
             }
             finally
             {
@@ -2502,38 +2559,36 @@ namespace ReplayLogger
                 speedWarnBuffer = null;
                 hitWarnBuffer = null;
                 AheSettingsManager.Reset();
-                ZoteSettingsManager.Reset();
-                CollectorPhasesSettingsManager.Reset();
                 CustomKnightSettingsManager.Reset();
                 godhomeQolTracker.Reset();
                 debugHotkeysTracker.Reset();
                 debugMenuTracker.Reset();
+                bossPhaseThresholdTracker.Reset();
                 ResetInlineTimelineCursors();
                 keyLogBuffer.Clear();
                 lastKeyLogFlushTime = 0;
                 lastHudElapsedSeconds = -1;
-		                pressedKeys.Clear();
-		                pressedKeysBuffer.Clear();
-		                enemyColliderBufferOverflowLogged = false;
-	                lastEnemyColliderOverflowWarningTime = 0f;
-	                enemyScanLayerMask = 0;
-	                lastEnemyLayerMaskRefreshTime = 0f;
+                keyScanner.Clear();
+                enemyColliderBufferOverflowLogged = false;
+                lastEnemyColliderOverflowWarningTime = 0f;
+                enemyScanLayerMask = 0;
+                lastEnemyLayerMaskRefreshTime = 0f;
                 enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
-	                enemyHealthManagerByGameObject.Clear();
-	                enemyHealthManagerCacheCleanupBuffer.Clear();
-            lastEnemyHealthCacheCleanupTime = 0f;
-            lastEnemySeedTime = 0f;
-            enemyHealthCacheCleanupCursor = 0;
-		                infoBoss.Clear();
-	                ownerPathByGameObject.Clear();
-	                ownerPathCacheCleanupBuffer.Clear();
-	                lastOwnerPathCacheCleanupTime = 0f;
-	                ownerPathCacheCleanupCursor = 0;
-		                uniqueBossByGameObject.Clear();
-	                uniqueBossSet.Clear();
-	                infoBossKeysBuffer.Clear();
-	                uniqueBossBuffersDirty = true;
-	                hasHeroBoxState = false;
+                enemyHealthManagerByGameObject.Clear();
+                enemyHealthManagerCacheCleanupBuffer.Clear();
+                lastEnemyHealthCacheCleanupTime = 0f;
+                lastEnemySeedTime = 0f;
+                enemyHealthCacheCleanupCursor = 0;
+                infoBoss.Clear();
+                ownerPathByGameObject.Clear();
+                ownerPathCacheCleanupBuffer.Clear();
+                lastOwnerPathCacheCleanupTime = 0f;
+                ownerPathCacheCleanupCursor = 0;
+                uniqueBossByGameObject.Clear();
+                uniqueBossSet.Clear();
+                infoBossKeysBuffer.Clear();
+                uniqueBossBuffersDirty = true;
+                hasHeroBoxState = false;
                 lastHeroBoxActive = -1;
                 heroBoxOffStartTime = -1f;
                 cachedHeroTransform = null;
@@ -2541,21 +2596,25 @@ namespace ReplayLogger
                 isInvincible = false;
                 invTimer = 0f;
                 damageSectionStarted = false;
+                pressedButtonsSectionStarted = false;
                 DisposeDebugModHooks();
                 isChallengeCompleted = "-";
                 bossCounter = 0;
                 startUnixTime = 0;
                 isPlayChalange = false;
                 isManualLogging = false;
+                ReleaseGameplayHooksIfIdle();
                 currentPantheonNumber = 0;
                 capturedPantheonNumber = 0;
                 capturedPantheonSequence = null;
                 currentPantheonUsesTrueBossRush = false;
+                currentPantheonUsesRandomOrder = false;
                 cachedFrameUnixTime = 0;
                 manualStartScene = null;
                 manualRoomHeaderWritten = false;
                 manualRoomStartUnixTime = 0;
                 manualHoldStartTime = 0f;
+                manualBossManipulateLatched = false;
                 if (toastShown || manualClose)
                 {
                     customCanvas?.DestroyCanvasDelayed(hudToastSeconds);
@@ -2633,12 +2692,11 @@ namespace ReplayLogger
             return sortedLogs;
         }
 
-
         float lastFps = 0f;
 
         private void SpellFluke_DoDamage(On.SpellFluke.orig_DoDamage orig, SpellFluke self, GameObject obj, int upwardRecursionAmount, bool burst)
         {
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string damageScene = ResolveDamageChangeSceneTag();
             if (string.IsNullOrEmpty(damageScene))
             {
@@ -2650,7 +2708,7 @@ namespace ReplayLogger
 
         private void DamageEnemies_DoDamage(On.DamageEnemies.orig_DoDamage orig, DamageEnemies self, GameObject target)
         {
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string damageScene = ResolveDamageChangeSceneTag();
             if (string.IsNullOrEmpty(damageScene))
             {
@@ -2671,7 +2729,7 @@ namespace ReplayLogger
 
         private void HitTaker_Hit(On.HitTaker.orig_Hit orig, GameObject targetGameObject, HitInstance damageInstance, int recursionDepth)
         {
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string damageScene = ResolveDamageChangeSceneTag();
             if (string.IsNullOrEmpty(damageScene))
             {
@@ -2700,7 +2758,7 @@ namespace ReplayLogger
             On.HutongGames.PlayMaker.Actions.IntOperator.orig_OnEnter orig,
             HutongGames.PlayMaker.Actions.IntOperator self)
         {
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string damageScene = ResolveDamageChangeSceneTag();
             if (string.IsNullOrEmpty(damageScene))
             {
@@ -2711,6 +2769,7 @@ namespace ReplayLogger
                 isPlayChalange,
                 writer,
                 damageChangeTracker,
+                soulSpentTracker,
                 damageScene,
                 lastUnixTime,
                 nowUnixTime,
@@ -2720,7 +2779,7 @@ namespace ReplayLogger
 
         private void ExtraDamageable_RecieveExtraDamage(On.ExtraDamageable.orig_RecieveExtraDamage orig, ExtraDamageable self, ExtraDamageTypes extraDamageType)
         {
-            long nowUnixTime = GetCachedFrameUnixTimeOrNow();
+            long nowUnixTime = KeyLogFormatting.GetCachedFrameUnixTimeOrNow(cachedFrameUnixTime);
             string damageScene = ResolveDamageChangeSceneTag();
             if (string.IsNullOrEmpty(damageScene))
             {
@@ -2746,8 +2805,4 @@ namespace ReplayLogger
 
     }
 }
-
-
-
-
 

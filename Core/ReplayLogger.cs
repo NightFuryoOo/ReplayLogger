@@ -9,9 +9,7 @@ using System.Reflection;
 
 namespace ReplayLogger
 {
-    
-    
-    
+
     internal static class CoreSessionLogger
     {
         private static readonly Dictionary<int, string> CustomCharmDisplayNames = new()
@@ -46,18 +44,37 @@ namespace ReplayLogger
             }
 
             IReadOnlyList<string> snapshot = GetEncryptedModSnapshot(modsDir);
+            List<string> unaccountedAssemblies = ModsChecking.FindUnaccountedLoadedAssemblies(modsDir);
             bool hasSeparator = !string.IsNullOrEmpty(separatorAfter);
-            if (snapshot.Count == 0 && !hasSeparator)
+            if (snapshot.Count == 0 && unaccountedAssemblies.Count == 0 && !hasSeparator)
             {
                 return;
             }
 
-            List<string> batch = TempObjectPools.RentStringList(snapshot.Count + (hasSeparator ? 1 : 0));
+            List<string> batch = TempObjectPools.RentStringList(snapshot.Count + unaccountedAssemblies.Count + (hasSeparator ? 4 : 3));
             try
             {
                 for (int i = 0; i < snapshot.Count; i++)
                 {
                     batch.Add(snapshot[i]);
+                }
+
+                if (snapshot.Count > 0)
+                {
+                    batch.Add(string.Empty);
+                }
+
+                if (unaccountedAssemblies.Count == 0)
+                {
+                    batch.Add("Unaccounted Loaded Assemblies: (none)");
+                }
+                else
+                {
+                    batch.Add("Unaccounted Loaded Assemblies:");
+                    foreach (string entry in unaccountedAssemblies)
+                    {
+                        batch.Add($"  {entry}");
+                    }
                 }
 
                 if (hasSeparator)
@@ -147,6 +164,11 @@ namespace ReplayLogger
                 builder.Append(" [Soul]");
             }
 
+            if (PlayerData.instance != null && PlayerData.instance.overcharmed)
+            {
+                builder.Append(" | [OVERCHARMED]");
+            }
+
             builder.Append('\n');
             return builder.ToString();
         }
@@ -220,55 +242,6 @@ namespace ReplayLogger
             }
         }
 
-        public static void WriteDamageInvSection(StreamWriter writer, IEnumerable<string> logs, string separatorAfter = "---------------------------------------------------")
-        {
-            if (writer == null)
-            {
-                return;
-            }
-
-            List<string> batch = TempObjectPools.RentStringList();
-            try
-            {
-                batch.Add("\n------------------------DAMAGE INV------------------------\n");
-                if (logs != null)
-                {
-                    foreach (string log in logs)
-                    {
-                        batch.Add(log);
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(separatorAfter))
-                {
-                    batch.Add(separatorAfter);
-                }
-
-                LogWrite.EncryptedLines(writer, batch);
-            }
-            finally
-            {
-                TempObjectPools.ReturnStringList(batch);
-            }
-        }
-
-        public static void WriteDamageInvSection(StreamWriter writer, BufferedLogSection logs, string separatorAfter = "---------------------------------------------------")
-        {
-            if (writer == null)
-            {
-                return;
-            }
-
-            LogWrite.EncryptedLine(writer, "\n------------------------DAMAGE INV------------------------\n");
-            logs?.WriteEncryptedLines(writer);
-
-            if (!string.IsNullOrEmpty(separatorAfter))
-            {
-                LogWrite.EncryptedLine(writer, separatorAfter);
-            }
-
-        }
-
         public static void WriteSeparator(StreamWriter writer, string separator = "---------------------------------------------------")
         {
             if (writer == null || string.IsNullOrEmpty(separator))
@@ -279,76 +252,16 @@ namespace ReplayLogger
             LogWrite.EncryptedLine(writer, separator);
         }
 
-        public static void WriteNoBlurSettings(StreamWriter writer, string separator = "---------------------------------------------------")
+        public static void WriteSeparatorWithSpacing(StreamWriter writer)
         {
             if (writer == null)
             {
                 return;
             }
 
-            IReadOnlyList<string> noBlurSettings = NoBlurIntegration.GetSettingsLines();
-            if (noBlurSettings.Count == 0)
-            {
-                return;
-            }
-
-            bool hasSeparator = !string.IsNullOrEmpty(separator);
-            List<string> batch = TempObjectPools.RentStringList(noBlurSettings.Count + (hasSeparator ? 2 : 1));
-            try
-            {
-                for (int i = 0; i < noBlurSettings.Count; i++)
-                {
-                    batch.Add(noBlurSettings[i]);
-                }
-
-                batch.Add(string.Empty);
-                if (hasSeparator)
-                {
-                    batch.Add(separator);
-                }
-
-                LogWrite.EncryptedLines(writer, batch);
-            }
-            finally
-            {
-                TempObjectPools.ReturnStringList(batch);
-            }
-        }
-
-        public static void WriteCustomizableAbilitiesSettings(StreamWriter writer, string separator = "---------------------------------------------------")
-        {
-            if (writer == null)
-            {
-                return;
-            }
-
-            IReadOnlyList<string> caSettings = CustomizableAbilitiesIntegration.GetSettingsLines();
-            if (caSettings.Count == 0)
-            {
-                return;
-            }
-
-            bool hasSeparator = !string.IsNullOrEmpty(separator);
-            List<string> batch = TempObjectPools.RentStringList(caSettings.Count + (hasSeparator ? 2 : 1));
-            try
-            {
-                for (int i = 0; i < caSettings.Count; i++)
-                {
-                    batch.Add(caSettings[i]);
-                }
-
-                batch.Add(string.Empty);
-                if (hasSeparator)
-                {
-                    batch.Add(separator);
-                }
-
-                LogWrite.EncryptedLines(writer, batch);
-            }
-            finally
-            {
-                TempObjectPools.ReturnStringList(batch);
-            }
+            LogWrite.EncryptedLine(writer, string.Empty);
+            WriteSeparator(writer);
+            LogWrite.EncryptedLine(writer, string.Empty);
         }
 
         public static void WriteControlSettings(StreamWriter writer, string separator = "---------------------------------------------------")
@@ -443,7 +356,7 @@ namespace ReplayLogger
             }
             catch
             {
-                
+
             }
 
             return lines;
@@ -465,7 +378,7 @@ namespace ReplayLogger
 
             try
             {
-                
+
                 object bindingsObj = GetMemberValue(action, "Bindings");
                 if (bindingsObj is System.Collections.IEnumerable enumerable)
                 {
@@ -492,7 +405,7 @@ namespace ReplayLogger
             }
             catch
             {
-                
+
             }
 
             if (TryFormatBinding(action, out string fallbackFormatted))
@@ -580,7 +493,7 @@ namespace ReplayLogger
                 }
                 catch
                 {
-                    
+
                 }
             }
 
@@ -593,7 +506,7 @@ namespace ReplayLogger
                 }
                 catch
                 {
-                    
+
                 }
             }
 
@@ -643,7 +556,7 @@ namespace ReplayLogger
             }
             catch
             {
-                
+
             }
 
             return false;
@@ -747,7 +660,7 @@ namespace ReplayLogger
 
         }
 
-        public static void AddSpeedWarning(List<string> buffer, string arenaName, long deltaMs, float defaultScale, float currentScale, double durationSeconds)
+        public static void AddSpeedWarning(List<string> buffer, string arenaName, long deltaMs, float defaultScale, float currentScale, double durationSeconds, bool isPaused = false)
         {
             if (buffer == null)
             {
@@ -755,7 +668,9 @@ namespace ReplayLogger
             }
 
             arenaName ??= "UnknownArena";
-            string warnEntry = $"|{arenaName}|+{deltaMs}|Default {(defaultScale * 100f):F0}% ({defaultScale:F3}) -> {(currentScale * 100f):F0}% ({currentScale:F3})|Duration {durationSeconds.ToString("F2", CultureInfo.InvariantCulture)}s";
+
+            string pauseSuffix = isPaused ? " (Pause)" : string.Empty;
+            string warnEntry = $"|{arenaName}|+{deltaMs}|Default {(defaultScale * 100f):F0}% ({defaultScale:F3}) -> {(currentScale * 100f):F0}% ({currentScale:F3}){pauseSuffix}|Duration {durationSeconds.ToString("F2", CultureInfo.InvariantCulture)}s";
             buffer.Add(warnEntry);
         }
 
@@ -931,7 +846,8 @@ namespace ReplayLogger
             }
 
             double durationSeconds = (now - speedDeviationStartUnix) / 1000.0;
-            CoreSessionLogger.AddSpeedWarning(warnings, arenaName, now - lastUnixTime, defaultTimeScale, currentScale, durationSeconds);
+            bool isPaused = GameManager.instance != null && GameManager.instance.isPaused;
+            CoreSessionLogger.AddSpeedWarning(warnings, arenaName, now - lastUnixTime, defaultTimeScale, currentScale, durationSeconds, isPaused);
         }
 
         private void ResetDeviationTracking()
@@ -953,6 +869,10 @@ namespace ReplayLogger
         private static PropertyInfo boundShellProperty;
         private static Func<bool> boundShellGetter;
         private static bool boundShellLookupFailed;
+        private static FieldInfo hitsSinceShieldedField;
+        private static bool hitsSinceShieldedLookupFailed;
+        private static MethodInfo infiniteHpMethod;
+        private static bool infiniteHpLookupFailed;
 
         public IReadOnlyList<string> Warnings => warnings;
 
@@ -985,6 +905,21 @@ namespace ReplayLogger
             }
 
             CaptureHealthState(arenaName, lastUnixTime, nowUnixTime, writer);
+        }
+
+        public void LogAttemptEnded(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, bool victory, int attemptNumber = 0)
+        {
+            if (writer == null)
+            {
+                return;
+            }
+
+            string arena = ArenaNormalization.NormalizeStrict(arenaName);
+            string outcome = victory ? "VICTORY" : "DEATH";
+            string attempt = attemptNumber > 0 ? $" {attemptNumber}*" : string.Empty;
+            warnings.Add(attempt.Length > 0
+                ? $"|{arena}|{attempt}|+{nowUnixTime - lastUnixTime}|(ATTEMPT ENDED - {outcome})"
+                : $"|{arena}|+{nowUnixTime - lastUnixTime}|(ATTEMPT ENDED - {outcome})");
         }
 
         public void Update(StreamWriter writer, string arenaName, long lastUnixTime)
@@ -1062,7 +997,7 @@ namespace ReplayLogger
         {
             long unixTime = nowUnixTime;
             string sign = delta >= 0 ? "+" : string.Empty;
-            string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string arena = ArenaNormalization.NormalizeStrict(arenaName);
             string warnEntry = $"|{arena}|+{unixTime - lastUnixTime}|{prev}->{current}|{sign}{delta} mask(s)";
             warnings.Add(warnEntry);
         }
@@ -1071,8 +1006,22 @@ namespace ReplayLogger
         {
             long unixTime = nowUnixTime;
             string sign = delta >= 0 ? "+" : string.Empty;
-            string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string arena = ArenaNormalization.NormalizeStrict(arenaName);
             string warnEntry = $"|{arena}|+{unixTime - lastUnixTime}|Lifeblood {prev}->{current}|{sign}{delta}";
+            warnings.Add(warnEntry);
+        }
+
+        public void LogInvulnerableHitEvent(StreamWriter writer, string arenaName, long lastUnixTime, long nowUnixTime, int damageAmount, int hazardType, string reason)
+        {
+            if (writer == null || damageAmount <= 0 || IsBoundShellActive())
+            {
+                return;
+            }
+
+            string arena = ArenaNormalization.NormalizeStrict(arenaName);
+            long delta = nowUnixTime - lastUnixTime;
+            string label = string.IsNullOrEmpty(reason) ? "Invulnerable Hit" : reason;
+            string warnEntry = $"|{arena}|+{delta}|{label}|damage={damageAmount}, hazard={hazardType}";
             warnings.Add(warnEntry);
         }
 
@@ -1105,6 +1054,63 @@ namespace ReplayLogger
             }
 
             return Math.Abs(delta) >= 4;
+        }
+
+        internal static bool TryGetHitsSinceShielded(HeroController hero, out int value)
+        {
+            value = 0;
+            if (hero == null || hitsSinceShieldedLookupFailed)
+            {
+                return false;
+            }
+
+            if (hitsSinceShieldedField == null)
+            {
+                hitsSinceShieldedField = typeof(HeroController).GetField("hitsSinceShielded", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                if (hitsSinceShieldedField == null || hitsSinceShieldedField.FieldType != typeof(int))
+                {
+                    hitsSinceShieldedLookupFailed = true;
+                    return false;
+                }
+            }
+
+            value = (int)hitsSinceShieldedField.GetValue(hero);
+            return true;
+        }
+
+        internal static bool IsGodhomeQolInfiniteHpActive()
+        {
+            if (infiniteHpLookupFailed)
+            {
+                return false;
+            }
+
+            if (infiniteHpMethod == null)
+            {
+                Type cheatsType = TypeLookup.FindType("GodhomeQoL.Modules.Cheats.Cheats");
+                if (cheatsType == null)
+                {
+                    infiniteHpLookupFailed = true;
+                    return false;
+                }
+
+                infiniteHpMethod = cheatsType.GetMethod("GetInfiniteHpEnabled", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (infiniteHpMethod == null || infiniteHpMethod.ReturnType != typeof(bool))
+                {
+                    infiniteHpLookupFailed = true;
+                    return false;
+                }
+            }
+
+            try
+            {
+                return infiniteHpMethod.Invoke(null, null) is bool value && value;
+            }
+            catch
+            {
+                infiniteHpLookupFailed = true;
+                return false;
+            }
         }
 
         private static bool IsBoundShellActive()
@@ -1273,8 +1279,7 @@ namespace ReplayLogger
 
         private static int CalculateFinalDamage(int damageDealt, float multiplier)
         {
-            int baseDamage = Math.Max(0, damageDealt);
-            if (baseDamage == 0)
+            if (damageDealt == 0)
             {
                 return 0;
             }
@@ -1285,16 +1290,16 @@ namespace ReplayLogger
 
             if (Mathf.Approximately(normalizedMultiplier, 1f))
             {
-                return baseDamage;
+                return damageDealt;
             }
 
-            double scaled = baseDamage * normalizedMultiplier;
-            if (scaled <= 0d)
+            double scaled = damageDealt * normalizedMultiplier;
+            if (scaled == 0d)
             {
                 return 0;
             }
 
-            return Math.Max(0, (int)Math.Round(scaled, MidpointRounding.AwayFromZero));
+            return (int)Math.Round(scaled, MidpointRounding.AwayFromZero);
         }
 
         private static string BuildOwnerStateKey(string ownerName)
@@ -1506,7 +1511,7 @@ namespace ReplayLogger
             }
             catch
             {
-                
+
             }
 
             if (lastDamage.HasValue && lastDamage.Value == damage)
@@ -1516,7 +1521,7 @@ namespace ReplayLogger
 
             lastDamage = damage;
             string targetName = target != null ? target.name : "null";
-            string arena = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string arena = ArenaNormalization.NormalizeStrict(arenaName);
             entries.Add($"Flukenest: {targetName}-{arena}/{deltaMs} #{damage}");
         }
 
@@ -1611,7 +1616,7 @@ namespace ReplayLogger
             try
             {
                 object raw = flukeDamageFieldStatic.GetCachedValue(self);
-                if (raw is not int intDamage || intDamage <= 0)
+                if (raw is not int intDamage || intDamage == 0)
                 {
                     return;
                 }
@@ -1624,7 +1629,7 @@ namespace ReplayLogger
             }
 
             long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string scene = ArenaNormalization.NormalizeStrict(arenaName);
             damageChangeTracker.Track(FlukenestDamageOwnerName, scene, unixTime - lastUnixTime, damage, 1f);
         }
     }
@@ -1633,9 +1638,9 @@ namespace ReplayLogger
     {
         private const string DefendersCrestOwnerName = "Knight/Charm Effects/Defender's Crest";
         private const string ThornsOfAgonyOwnerName = "Knight/Charm Effects/Thorns of Agony";
-        private const string GlowingWombOwnerName = "Knight/Charm Effects/Glowing Womb";
+        internal const string GlowingWombOwnerName = "Knight/Charm Effects/Glowing Womb";
         private const string SporeShroomOwnerName = "Knight/Charm Effects/Spore Shroom";
-        private const string WeaversongOwnerName = "Knight/Charm Effects/Weaversong";
+        internal const string WeaversongOwnerName = "Knight/Charm Effects/Weaversong";
         private const string DreamshieldOwnerName = "Knight/Charm Effects/Dreamshield";
         private const string GrimmchildOwnerName = "Knight/Charm Effects/Grimmchild";
         private const string FlukenestDefendersCrestOwnerName = "Knight/Charm Effects/Flukenest + Defender's Crest";
@@ -1648,9 +1653,6 @@ namespace ReplayLogger
         private static readonly Dictionary<GameObject, CachedOwnerPathResult> trackedCharmOwnerPathCache = new(512);
         private static readonly List<GameObject> trackedCharmOwnerPathCacheCleanupBuffer = new(128);
         private const int TrackedCharmOwnerPathCacheHardLimit = 4096;
-        private const int TrackedCharmOwnerPathCacheCleanupMinSize = 256;
-        private const int TrackedCharmOwnerPathCacheCleanupBatchSize = 128;
-        private const float TrackedCharmOwnerPathCacheCleanupTickSeconds = 0.5f;
         private const float NegativeTrackedCharmOwnerPathCacheMaxAgeSeconds = 1f;
         private static float lastTrackedCharmOwnerPathCacheCleanupTime;
         private static int trackedCharmOwnerPathCacheCleanupCursor;
@@ -1741,8 +1743,8 @@ namespace ReplayLogger
                 return;
             }
 
-            int resolvedDamage = Math.Max(0, hitInstance.DamageDealt);
-            if (resolvedDamage <= 0)
+            int resolvedDamage = hitInstance.DamageDealt;
+            if (resolvedDamage == 0)
             {
                 return;
             }
@@ -1754,7 +1756,7 @@ namespace ReplayLogger
                 return;
             }
 
-            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string scene = ArenaNormalization.NormalizeStrict(arenaName);
             for (int i = 0; i < owners.Length; i++)
             {
                 string ownerPath = owners[i];
@@ -1787,14 +1789,14 @@ namespace ReplayLogger
                 return;
             }
 
-            int damage = Math.Max(0, hitInstance.DamageDealt);
-            if (damage <= 0)
+            int damage = hitInstance.DamageDealt;
+            if (damage == 0)
             {
                 return;
             }
 
             long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string scene = ArenaNormalization.NormalizeStrict(arenaName);
             damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, damage, hitInstance.Multiplier);
         }
 
@@ -1829,13 +1831,13 @@ namespace ReplayLogger
                     return;
                 }
 
-                if (nominalDamage <= 0)
+                if (nominalDamage == 0)
                 {
                     return;
                 }
 
                 long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+                string scene = ArenaNormalization.NormalizeStrict(arenaName);
                 damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, nominalDamage, 1f);
             }
             catch (Exception e)
@@ -1848,6 +1850,7 @@ namespace ReplayLogger
             bool isLogging,
             StreamWriter writer,
             DamageChangeTracker damageChangeTracker,
+            SoulSpentTracker soulSpentTracker,
             string arenaName,
             long lastUnixTime,
             long nowUnixTime,
@@ -1882,17 +1885,45 @@ namespace ReplayLogger
                 string.Equals(self.integer2?.Name, "Damage", StringComparison.Ordinal) &&
                 string.Equals(self.storeResult?.Name, "Enemy HP", StringComparison.Ordinal) &&
                 !string.IsNullOrEmpty(damageOwner);
-            int damage = canTrack ? Math.Max(0, self.integer2.Value) : 0;
+            int damage = canTrack ? self.integer2.Value : 0;
+
+            string soulFieldName = self.integer1?.Name;
+            bool isSoulSubtract =
+                soulSpentTracker != null &&
+                self.operation == HutongGames.PlayMaker.Actions.IntOperator.Operation.Subtract &&
+                string.Equals(self.storeResult?.Name, soulFieldName, StringComparison.Ordinal) &&
+                (string.Equals(soulFieldName, "MPCharge", StringComparison.Ordinal) ||
+                 string.Equals(soulFieldName, "MPReserve", StringComparison.Ordinal));
+            bool isSoulMain = isSoulSubtract && string.Equals(soulFieldName, "MPCharge", StringComparison.Ordinal);
+            int soulAmount = isSoulSubtract ? Math.Max(0, self.integer2?.Value ?? 0) : 0;
+            string soulSourceLabel = isSoulSubtract
+                ? (IsGlowingWombSource(ownerObject, ownerPath) ? "Glowing Womb" :
+                   IsWeaversongSource(ownerObject, ownerPath) ? "Weaversong" :
+                   null)
+                : null;
 
             orig(self);
 
-            if (!canTrack || damage <= 0)
+            if (isSoulSubtract && soulAmount > 1)
+            {
+                long soulUnixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                if (isSoulMain)
+                {
+                    soulSpentTracker.RecordMainSpend(arenaName, lastUnixTime, soulUnixTime, soulSourceLabel, ownerPath, soulAmount);
+                }
+                else
+                {
+                    soulSpentTracker.RecordReserveSpend(arenaName, lastUnixTime, soulUnixTime, soulSourceLabel, ownerPath, soulAmount);
+                }
+            }
+
+            if (!canTrack || damage == 0)
             {
                 return;
             }
 
             long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string scene = ArenaNormalization.NormalizeStrict(arenaName);
             damageChangeTracker.Track(damageOwner, scene, unixTime - lastUnixTime, damage, 1f);
         }
 
@@ -1959,7 +1990,7 @@ namespace ReplayLogger
             bool canTrack = isLogging && writer != null && damageChangeTracker != null && self != null;
             int hpBefore = 0;
             bool hasHpBefore = canTrack && TryReadExtraDamageHp(self, out hpBefore);
-            int nominalDamage = Math.Max(0, ExtraDamageable.GetDamageOfType(extraDamageType));
+            int nominalDamage = ExtraDamageable.GetDamageOfType(extraDamageType);
 
             orig(self, extraDamageType);
 
@@ -1968,7 +1999,7 @@ namespace ReplayLogger
                 return;
             }
 
-            if (!hasHpBefore || nominalDamage <= 0 || !TryReadExtraDamageHp(self, out int hpAfter))
+            if (!hasHpBefore || nominalDamage == 0 || !TryReadExtraDamageHp(self, out int hpAfter))
             {
                 return;
             }
@@ -1990,7 +2021,7 @@ namespace ReplayLogger
             }
 
             long unixTime = nowUnixTime > 0 ? nowUnixTime : DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            string scene = string.IsNullOrEmpty(arenaName) ? "UnknownArena" : arenaName;
+            string scene = ArenaNormalization.NormalizeStrict(arenaName);
             damageChangeTracker.Track(ownerPath, scene, unixTime - lastUnixTime, nominalDamage, 1f);
         }
 
@@ -2079,7 +2110,7 @@ namespace ReplayLogger
             try
             {
                 object raw = damageEnemiesDamageField.GetCachedValue(self);
-                return raw is int intDamage ? Math.Max(0, intDamage) : 0;
+                return raw is int intDamage ? intDamage : 0;
             }
             catch
             {
@@ -2102,7 +2133,6 @@ namespace ReplayLogger
 
             return target.GetComponentInParent<HealthManager>();
         }
-
 
         private static bool TryMapSourcePathToCharmOwner(string sourcePath, out string ownerPath)
         {
@@ -2188,7 +2218,7 @@ namespace ReplayLogger
             }
 
             float now = Time.unscaledTime;
-            CleanupTrackedCharmOwnerPathCacheIfNeeded(now);
+            OwnerPathCache.CleanupIfNeeded(trackedCharmOwnerPathCache, trackedCharmOwnerPathCacheCleanupBuffer, ref lastTrackedCharmOwnerPathCacheCleanupTime, ref trackedCharmOwnerPathCacheCleanupCursor, now);
 
             if (trackedCharmOwnerPathCache.TryGetValue(sourceObject, out CachedOwnerPathResult cached))
             {
@@ -2279,7 +2309,7 @@ namespace ReplayLogger
 
             if (trackedCharmOwnerPathCache.Count >= TrackedCharmOwnerPathCacheHardLimit)
             {
-                CleanupTrackedCharmOwnerPathCacheIfNeeded(now, force: true);
+                OwnerPathCache.CleanupIfNeeded(trackedCharmOwnerPathCache, trackedCharmOwnerPathCacheCleanupBuffer, ref lastTrackedCharmOwnerPathCacheCleanupTime, ref trackedCharmOwnerPathCacheCleanupCursor, now, force: true);
                 if (trackedCharmOwnerPathCache.Count >= TrackedCharmOwnerPathCacheHardLimit)
                 {
                     trackedCharmOwnerPathCache.Clear();
@@ -2290,63 +2320,6 @@ namespace ReplayLogger
 
             trackedCharmOwnerPathCache[sourceObject] =
                 new CachedOwnerPathResult(hasOwnerPath, hasOwnerPath ? ownerPath : null, now);
-        }
-
-        private static void CleanupTrackedCharmOwnerPathCacheIfNeeded(float now, bool force = false)
-        {
-            if (trackedCharmOwnerPathCache.Count < TrackedCharmOwnerPathCacheCleanupMinSize)
-            {
-                trackedCharmOwnerPathCacheCleanupCursor = 0;
-                return;
-            }
-
-            if (!force && now - lastTrackedCharmOwnerPathCacheCleanupTime < TrackedCharmOwnerPathCacheCleanupTickSeconds)
-            {
-                return;
-            }
-
-            lastTrackedCharmOwnerPathCacheCleanupTime = now;
-            trackedCharmOwnerPathCacheCleanupBuffer.Clear();
-
-            int startIndex = trackedCharmOwnerPathCacheCleanupCursor;
-            int endIndexExclusive = startIndex + TrackedCharmOwnerPathCacheCleanupBatchSize;
-            int index = 0;
-
-            foreach (var pair in trackedCharmOwnerPathCache)
-            {
-                if (index < startIndex)
-                {
-                    index++;
-                    continue;
-                }
-
-                if (index >= endIndexExclusive)
-                {
-                    break;
-                }
-
-                if (pair.Key == null)
-                {
-                    trackedCharmOwnerPathCacheCleanupBuffer.Add(pair.Key);
-                }
-
-                index++;
-            }
-
-            for (int i = 0; i < trackedCharmOwnerPathCacheCleanupBuffer.Count; i++)
-            {
-                trackedCharmOwnerPathCache.Remove(trackedCharmOwnerPathCacheCleanupBuffer[i]);
-            }
-
-            if (index < endIndexExclusive)
-            {
-                trackedCharmOwnerPathCacheCleanupCursor = 0;
-                return;
-            }
-
-            int remainingCount = trackedCharmOwnerPathCache.Count;
-            trackedCharmOwnerPathCacheCleanupCursor =
-                endIndexExclusive >= remainingCount ? 0 : endIndexExclusive;
         }
 
         private static string ResolveExtraDamageOwner(GameObject sourceObject, ExtraDamageTypes extraDamageType)
@@ -2436,7 +2409,7 @@ namespace ReplayLogger
                 : SporeShroomOwnerName;
         }
 
-        private static bool IsGlowingWombSource(GameObject sourceObject, string sourcePath)
+        internal static bool IsGlowingWombSource(GameObject sourceObject, string sourcePath)
         {
             return ContainsToken(sourcePath, "womb") ||
                    ContainsToken(sourcePath, "hatchling") ||
@@ -2444,7 +2417,7 @@ namespace ReplayLogger
                    HasComponentTypeTokenInParents(sourceObject, "hatchling");
         }
 
-        private static bool IsWeaversongSource(GameObject sourceObject, string sourcePath)
+        internal static bool IsWeaversongSource(GameObject sourceObject, string sourcePath)
         {
             return ContainsToken(sourcePath, "weaver") ||
                    ContainsToken(sourcePath, "scuttler") ||
@@ -2672,13 +2645,11 @@ namespace ReplayLogger
                    value.IndexOf("spore", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static bool IsCharmEquipped(int charmId)
+        internal static bool IsCharmEquipped(int charmId)
         {
             PlayerData data = PlayerData.instance;
             return data?.equippedCharms != null && data.equippedCharms.Contains(charmId);
         }
     }
 }
-
-
 

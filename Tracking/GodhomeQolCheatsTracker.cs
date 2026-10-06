@@ -543,7 +543,7 @@ namespace ReplayLogger
         {
             if (!godhomeQolTypeResolved)
             {
-                godhomeQolType = FindType(GodhomeQolTypeName);
+                godhomeQolType = TypeLookup.FindType(GodhomeQolTypeName);
                 godhomeQolTypeResolved = true;
             }
 
@@ -554,7 +554,7 @@ namespace ReplayLogger
         {
             if (!moduleManagerTypeResolved)
             {
-                moduleManagerType = FindType(ModuleManagerTypeName);
+                moduleManagerType = TypeLookup.FindType(ModuleManagerTypeName);
                 moduleManagerTypeResolved = true;
             }
 
@@ -565,25 +565,11 @@ namespace ReplayLogger
         {
             if (!cheatsTypeResolved)
             {
-                cheatsType = FindType(CheatsTypeName);
+                cheatsType = TypeLookup.FindType(CheatsTypeName);
                 cheatsTypeResolved = true;
             }
 
             return cheatsType;
-        }
-
-        private static Type FindType(string fullName)
-        {
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type type = asm.GetType(fullName, false);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            return null;
         }
 
         private void EnsureKillAllHook()
