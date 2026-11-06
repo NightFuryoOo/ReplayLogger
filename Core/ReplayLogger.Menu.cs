@@ -19,6 +19,7 @@ namespace ReplayLogger
         public int ManualLogKeyCode = (int)KeyCode.None;
         public bool ManualModeEnabled = false;
         public float HudToastSeconds = DefaultToastSeconds;
+        public bool WitnessReminderEnabled = true;
     }
 
     public partial class ReplayLogger
@@ -47,6 +48,7 @@ namespace ReplayLogger
             key => Settings.ManualLogKeyCode = (int)key);
 
         private static MenuButton manualModeButton;
+        private static MenuButton witnessReminderButton;
         private static RebindListener listener;
         private static readonly RebindFrameGuard rebindFrameGuard = new();
 
@@ -86,6 +88,12 @@ namespace ReplayLogger
             return NormalizeToastSeconds(Settings.HudToastSeconds);
         }
 
+        internal static bool IsWitnessReminderEnabled()
+        {
+            EnsureSettings();
+            return Settings.WitnessReminderEnabled;
+        }
+
         public void OnLoadGlobal(ReplayLoggerSettings settings)
         {
             Settings = settings ?? new ReplayLoggerSettings();
@@ -122,6 +130,7 @@ namespace ReplayLogger
                 false
             );
             elements.Add(toastSecondsSlider);
+            elements.Add(WitnessReminderToggleButton());
 
             Menu menu = new("ReplayLogger", elements.ToArray());
             return menu.GetMenuScreen(modListMenu);
@@ -219,6 +228,26 @@ namespace ReplayLogger
 
             manualModeButton.Name = FormatToggleButtonName("Manual logging mode", Settings.ManualModeEnabled);
             manualModeButton.Update();
+        }
+
+        private static MenuButton WitnessReminderToggleButton() =>
+            witnessReminderButton = new MenuButton(
+                FormatToggleButtonName("The Witness reminder", Settings.WitnessReminderEnabled),
+                "Show a reminder when The Witness is not running (hidden during runs).",
+                _ => ToggleWitnessReminder(),
+                false
+            );
+
+        private static void ToggleWitnessReminder()
+        {
+            Settings.WitnessReminderEnabled = !Settings.WitnessReminderEnabled;
+            if (witnessReminderButton == null)
+            {
+                return;
+            }
+
+            witnessReminderButton.Name = FormatToggleButtonName("The Witness reminder", Settings.WitnessReminderEnabled);
+            witnessReminderButton.Update();
         }
 
         private static string FormatButtonName(string title, string value) => $"{title}: {value}";

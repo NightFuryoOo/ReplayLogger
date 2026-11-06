@@ -3369,6 +3369,8 @@ namespace ReplayLogger
         }
 
         internal static CustomCanvas GetActiveCanvas() => customCanvas;
+
+        internal static bool IsLogging => isLogging;
     }
 }
 

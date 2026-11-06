@@ -191,6 +191,7 @@ namespace ReplayLogger
 
             InitializeHotkeys();
             InitializeRebindListener();
+            WitnessReminder.Create();
         }
 
         private void EnsureGameplayHooksActive()
