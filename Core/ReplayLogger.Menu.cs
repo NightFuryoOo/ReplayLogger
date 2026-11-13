@@ -20,6 +20,7 @@ namespace ReplayLogger
         public bool ManualModeEnabled = false;
         public float HudToastSeconds = DefaultToastSeconds;
         public bool WitnessReminderEnabled = true;
+        public bool CustomPantheonLogsEnabled = false;
     }
 
     public partial class ReplayLogger
@@ -49,6 +50,7 @@ namespace ReplayLogger
 
         private static MenuButton manualModeButton;
         private static MenuButton witnessReminderButton;
+        private static MenuButton customPantheonLogsButton;
         private static RebindListener listener;
         private static readonly RebindFrameGuard rebindFrameGuard = new();
 
@@ -94,6 +96,12 @@ namespace ReplayLogger
             return Settings.WitnessReminderEnabled;
         }
 
+        internal static bool IsCustomPantheonLogsEnabled()
+        {
+            EnsureSettings();
+            return Settings.CustomPantheonLogsEnabled;
+        }
+
         public void OnLoadGlobal(ReplayLoggerSettings settings)
         {
             Settings = settings ?? new ReplayLoggerSettings();
@@ -131,6 +139,7 @@ namespace ReplayLogger
             );
             elements.Add(toastSecondsSlider);
             elements.Add(WitnessReminderToggleButton());
+            elements.Add(CustomPantheonLogsToggleButton());
 
             Menu menu = new("ReplayLogger", elements.ToArray());
             return menu.GetMenuScreen(modListMenu);
@@ -248,6 +257,26 @@ namespace ReplayLogger
 
             witnessReminderButton.Name = FormatToggleButtonName("The Witness reminder", Settings.WitnessReminderEnabled);
             witnessReminderButton.Update();
+        }
+
+        private static MenuButton CustomPantheonLogsToggleButton() =>
+            customPantheonLogsButton = new MenuButton(
+                FormatToggleButtonName("Custom Pantheon logs", Settings.CustomPantheonLogsEnabled),
+                "Log GodhomeQoL Custom Pantheon runs (applies from the next run).",
+                _ => ToggleCustomPantheonLogs(),
+                false
+            );
+
+        private static void ToggleCustomPantheonLogs()
+        {
+            Settings.CustomPantheonLogsEnabled = !Settings.CustomPantheonLogsEnabled;
+            if (customPantheonLogsButton == null)
+            {
+                return;
+            }
+
+            customPantheonLogsButton.Name = FormatToggleButtonName("Custom Pantheon logs", Settings.CustomPantheonLogsEnabled);
+            customPantheonLogsButton.Update();
         }
 
         private static string FormatButtonName(string title, string value) => $"{title}: {value}";

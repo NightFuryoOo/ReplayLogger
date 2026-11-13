@@ -255,9 +255,120 @@ namespace ReplayLogger
         )
         {
             orig(sequence, bindings, playerData);
+            if (GodhomeQolCustomPantheonIntegration.IsCustomPantheonDoor(playerData))
+            {
+                customPantheonRoute = IsCustomPantheonLogsEnabled() ? TryGetPantheonSequence(sequence) : null;
+                capturedPantheonSequence = null;
+                capturedPantheonNumber = 0;
+                currentPantheonNumber = 0;
+                return;
+            }
+
+            customPantheonRoute = null;
             capturedPantheonSequence = TryGetPantheonSequence(sequence);
             capturedPantheonNumber = DeterminePantheonNumber(capturedPantheonSequence);
             currentPantheonNumber = capturedPantheonNumber;
+        }
+
+        private const string CustomPantheonFolder = "Custom Pantheon";
+        private List<string> customPantheonRoute;
+        private bool customPantheonRun;
+        private int customPantheonIndex;
+        private string customPantheonChainName;
+
+        private bool IsCustomPantheonStart(string targetScene)
+        {
+            return customPantheonRoute != null
+                && customPantheonRoute.Count > 0
+                && string.Equals(customPantheonRoute[0], targetScene, StringComparison.Ordinal)
+                && BossSequenceController.IsInSequence;
+        }
+
+        private void ResetCustomPantheonState()
+        {
+            customPantheonRoute = null;
+            customPantheonRun = false;
+            customPantheonIndex = 0;
+            customPantheonChainName = null;
+        }
+
+        private void AddSceneStartLine(string startLine, string fallbackLine)
+        {
+            bool wroteToSection = false;
+            if (pressedButtonsLog != null)
+            {
+                pressedButtonsLog.Add(startLine);
+                wroteToSection = true;
+            }
+
+            if (DamageAnfInv != null)
+            {
+                DamageAnfInv.Add(startLine);
+                wroteToSection = true;
+            }
+
+            if (!wroteToSection)
+            {
+                LogWrite.EncryptedLine(writer, fallbackLine);
+            }
+        }
+
+        private void BeginCustomPantheon(string targetScene, string dataTime)
+        {
+            List<string> route = customPantheonRoute;
+            if (!TryBeginPantheonSession(targetScene, includeBossManipulate: true, out int playTime))
+            {
+                ResetCustomPantheonState();
+                return;
+            }
+
+            customPantheonRoute = route;
+            customPantheonRun = true;
+            customPantheonIndex = 0;
+            customPantheonChainName = GodhomeQolCustomPantheonIntegration.GetChainName();
+            currentPanteon = (CustomPantheonFolder, route);
+            foreach (string line in GodhomeQolCustomPantheonIntegration.DescribeRun(customPantheonChainName, route))
+            {
+                LogWrite.EncryptedLine(writer, line);
+            }
+
+            CoreSessionLogger.WriteSeparator(writer);
+            bool isSkippedScene = SkipScenes.Contains(targetScene);
+            if (!isSkippedScene)
+            {
+                bossCounter++;
+            }
+
+            string counter = !isSkippedScene ? $"| {bossCounter}*" : string.Empty;
+            AddSceneStartLine(
+                $"{dataTime}|{lastUnixTime}|{targetScene}{counter}",
+                $"{dataTime}|{lastUnixTime}|{playTime}|{targetScene}{counter}");
+        }
+
+        private void ContinueCustomPantheon(string targetScene, string dataTime)
+        {
+            int next = customPantheonIndex + 1;
+            if (customPantheonRoute == null
+                || next >= customPantheonRoute.Count
+                || !string.Equals(customPantheonRoute[next], targetScene, StringComparison.Ordinal))
+            {
+                Close();
+                return;
+            }
+
+            customPantheonIndex = next;
+            godhomeQolTracker.StartFight(targetScene, lastUnixTime, includeBossManipulate: true, includeBossChallenge: true);
+            bool isSkippedScene = SkipScenes.Contains(targetScene);
+            if (!isSkippedScene)
+            {
+                bossCounter++;
+            }
+
+            StartLoad();
+            string counter = !isSkippedScene ? $"| {bossCounter}*" : string.Empty;
+            AddSceneStartLine(
+                $"{dataTime}|{lastUnixTime}|{targetScene}{counter}",
+                $"{dataTime}|{lastUnixTime}|{targetScene}|{{sprite}}{targetScene}{counter}");
         }
 
         private static List<string> TryGetPantheonSequence(BossSequence sequence)
@@ -1846,6 +1957,103 @@ namespace ReplayLogger
             customCanvas?.StartUpdateSprite();
         }
 
+        private bool TryBeginPantheonSession(string targetScene, bool includeBossManipulate, out int playTime)
+        {
+            isChallengeCompleted = "-";
+            startUnixTime = lastUnixTime;
+            playTime = (int)((PlayerData.instance?.playTime ?? 0f) * 100);
+            isPlayChalange = true;
+            EnsureGameplayHooksActive();
+
+            try
+            {
+
+                activeEncryptionSession = KeyloggerLogEncryption.CreateSession();
+                lastString = activeEncryptionSession.SessionKeyBlob;
+                currentNameLog = Path.Combine(dllDir, $"KeyLog{DateTime.UtcNow.Ticks}.log");
+                pressedButtonsLog?.Clear();
+                DamageAnfInv?.Clear();
+                InvWarn?.Clear();
+                speedWarnBuffer?.Clear();
+                hitWarnBuffer?.Clear();
+                pressedButtonsLog = new BufferedLogSection($"{currentNameLog}.keys.tmp", BufferedSectionThreshold);
+                DamageAnfInv = new BufferedLogSection($"{currentNameLog}.damage.tmp", BufferedSectionThreshold);
+                InvWarn = new BufferedLogSection($"{currentNameLog}.warn.tmp", BufferedSectionThreshold);
+                speedWarnBuffer = new BufferedLogSection($"{currentNameLog}.speed.tmp", BufferedSectionThreshold);
+                hitWarnBuffer = new BufferedLogSection($"{currentNameLog}.hit.tmp", BufferedSectionThreshold);
+                writer = new AsyncBlockLogWriter(currentNameLog, lastString, activeEncryptionSession, BlockSizeBytes, BlockMaxAgeMs, LogQueueCapacity);
+                CustomKnightSettingsManager.StartTracking(targetScene, lastUnixTime);
+                AheSettingsManager.RefreshSnapshot();
+                speedWarnTracker.Reset(Mathf.Max(Time.timeScale, 0f));
+                hitWarnTracker.Reset();
+                bool initialDebugUiVisible = DebugModIntegration.TryGetUiVisible(out bool visible) && visible;
+                debugModEventsTracker.Reset(initialDebugUiVisible);
+                debugMenuTracker.Reset(initialDebugUiVisible);
+                debugHotkeysTracker.InitializeBindings();
+                keyLogBuffer.Clear();
+                lastKeyLogFlushTime = 0;
+                lastHudElapsedSeconds = -1;
+                keyScanner.Clear();
+                enemyColliderBufferOverflowLogged = false;
+                lastEnemyColliderOverflowWarningTime = 0f;
+                enemyScanLayerMask = 0;
+                lastEnemyLayerMaskRefreshTime = 0f;
+                enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
+                enemyHealthManagerByGameObject.Clear();
+                enemyHealthManagerCacheCleanupBuffer.Clear();
+                lastEnemyHealthCacheCleanupTime = 0f;
+                lastEnemySeedTime = 0f;
+                enemyHealthCacheCleanupCursor = 0;
+                infoBoss.Clear();
+                ownerPathByGameObject.Clear();
+                ownerPathCacheCleanupBuffer.Clear();
+                lastOwnerPathCacheCleanupTime = 0f;
+                ownerPathCacheCleanupCursor = 0;
+                uniqueBossByGameObject.Clear();
+                uniqueBossSet.Clear();
+                infoBossKeysBuffer.Clear();
+                uniqueBossBuffersDirty = true;
+                hasHeroBoxState = false;
+                lastHeroBoxActive = -1;
+                heroBoxOffStartTime = -1f;
+                cachedHeroTransform = null;
+                cachedHeroBoxObject = null;
+                isInvincible = false;
+                invTimer = 0f;
+                damageSectionStarted = false;
+                pressedButtonsSectionStarted = false;
+                damageChangeTracker.Reset();
+                CharmDamageTracker.ResetHints();
+                charmsChangeTracker.Reset();
+                foreach (ITrackerLifecycle lifecycleTracker in LifecycleTrackers())
+                {
+                    lifecycleTracker.Reset();
+                }
+                ResetInlineTimelineCursors();
+                CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
+                LogWrite.EncryptedLine(writer, CoreSessionLogger.BuildEquippedCharmsLine());
+                CoreSessionLogger.WriteEncryptedSkillLines(writer, "---------------------------------------------------");
+                speedWarnTracker.LogInitial(writer, targetScene, lastUnixTime);
+                InitializeDebugModHooks();
+                godhomeQolTracker.Reset();
+                godhomeQolTracker.StartFight(targetScene, lastUnixTime, includeBossManipulate: includeBossManipulate, includeBossChallenge: true);
+                cachedFrameUnixTime = lastUnixTime;
+
+            }
+            catch (Exception e)
+            {
+                global::ReplayLogger.InternalDiagnostics.Error("ReplayLogger: failed to start pantheon logging: " + e.Message);
+                AbortPantheonLogging();
+                return false;
+            }
+
+            int seed = (int)(lastUnixTime ^ playTime);
+
+            customCanvas = new CustomCanvas(new NumberInCanvas(seed), new LoadingSprite(lastString));
+            pantheonToastHideAtUnscaledTime = 0f;
+            return true;
+        }
+
         private string currentNameLog;
         private void OpenFile(On.SceneLoad.orig_Begin orig, SceneLoad self)
         {
@@ -1907,6 +2115,22 @@ namespace ReplayLogger
                     Close();
                 }
 
+                if (isPlayChalange && customPantheonRun)
+                {
+                    ContinueCustomPantheon(self.TargetSceneName, dataTime);
+                    lastScene = self.TargetSceneName;
+                    orig(self);
+                    return;
+                }
+
+                if (!isPlayChalange && IsCustomPantheonStart(self.TargetSceneName))
+                {
+                    BeginCustomPantheon(self.TargetSceneName, dataTime);
+                    lastScene = self.TargetSceneName;
+                    orig(self);
+                    return;
+                }
+
                 if (self.TargetSceneName.Contains("GG_Boss_Door") || IsPantheonFiveEntry(self.TargetSceneName))
                 {
                     int pantheonNumber = currentPantheonNumber;
@@ -1923,99 +2147,12 @@ namespace ReplayLogger
                         return;
                     }
 
-                    startUnixTime = lastUnixTime;
-                    int curentPlayTime = (int)((PlayerData.instance?.playTime ?? 0f) * 100);
-                    isPlayChalange = true;
-                    EnsureGameplayHooksActive();
-
-                    try
+                    if (!TryBeginPantheonSession(self.TargetSceneName, includeBossManipulate: false, out int curentPlayTime))
                     {
-
-                        activeEncryptionSession = KeyloggerLogEncryption.CreateSession();
-                        lastString = activeEncryptionSession.SessionKeyBlob;
-                        currentNameLog = Path.Combine(dllDir, $"KeyLog{DateTime.UtcNow.Ticks}.log");
-                        pressedButtonsLog?.Clear();
-                        DamageAnfInv?.Clear();
-                        InvWarn?.Clear();
-                        speedWarnBuffer?.Clear();
-                        hitWarnBuffer?.Clear();
-                        pressedButtonsLog = new BufferedLogSection($"{currentNameLog}.keys.tmp", BufferedSectionThreshold);
-                        DamageAnfInv = new BufferedLogSection($"{currentNameLog}.damage.tmp", BufferedSectionThreshold);
-                        InvWarn = new BufferedLogSection($"{currentNameLog}.warn.tmp", BufferedSectionThreshold);
-                        speedWarnBuffer = new BufferedLogSection($"{currentNameLog}.speed.tmp", BufferedSectionThreshold);
-                        hitWarnBuffer = new BufferedLogSection($"{currentNameLog}.hit.tmp", BufferedSectionThreshold);
-                        writer = new AsyncBlockLogWriter(currentNameLog, lastString, activeEncryptionSession, BlockSizeBytes, BlockMaxAgeMs, LogQueueCapacity);
-                        CustomKnightSettingsManager.StartTracking(self.TargetSceneName, lastUnixTime);
-                        AheSettingsManager.RefreshSnapshot();
-                        speedWarnTracker.Reset(Mathf.Max(Time.timeScale, 0f));
-                        hitWarnTracker.Reset();
-                        bool initialDebugUiVisible = DebugModIntegration.TryGetUiVisible(out bool visible) && visible;
-                        debugModEventsTracker.Reset(initialDebugUiVisible);
-                        debugMenuTracker.Reset(initialDebugUiVisible);
-                        debugHotkeysTracker.InitializeBindings();
-                        keyLogBuffer.Clear();
-                        lastKeyLogFlushTime = 0;
-                        lastHudElapsedSeconds = -1;
-                        keyScanner.Clear();
-                        enemyColliderBufferOverflowLogged = false;
-                        lastEnemyColliderOverflowWarningTime = 0f;
-                        enemyScanLayerMask = 0;
-                        lastEnemyLayerMaskRefreshTime = 0f;
-                        enemyColliderBuffer = new Collider2D[EnemyColliderBufferInitialSize];
-                        enemyHealthManagerByGameObject.Clear();
-                        enemyHealthManagerCacheCleanupBuffer.Clear();
-                        lastEnemyHealthCacheCleanupTime = 0f;
-                        lastEnemySeedTime = 0f;
-                        enemyHealthCacheCleanupCursor = 0;
-                        infoBoss.Clear();
-                        ownerPathByGameObject.Clear();
-                        ownerPathCacheCleanupBuffer.Clear();
-                        lastOwnerPathCacheCleanupTime = 0f;
-                        ownerPathCacheCleanupCursor = 0;
-                        uniqueBossByGameObject.Clear();
-                        uniqueBossSet.Clear();
-                        infoBossKeysBuffer.Clear();
-                        uniqueBossBuffersDirty = true;
-                        hasHeroBoxState = false;
-                        lastHeroBoxActive = -1;
-                        heroBoxOffStartTime = -1f;
-                        cachedHeroTransform = null;
-                        cachedHeroBoxObject = null;
-                        isInvincible = false;
-                        invTimer = 0f;
-                        damageSectionStarted = false;
-                        pressedButtonsSectionStarted = false;
-                        damageChangeTracker.Reset();
-                        CharmDamageTracker.ResetHints();
-                        charmsChangeTracker.Reset();
-                        foreach (ITrackerLifecycle lifecycleTracker in LifecycleTrackers())
-                        {
-                            lifecycleTracker.Reset();
-                        }
-                        ResetInlineTimelineCursors();
-                        CoreSessionLogger.WriteEncryptedModSnapshot(writer, modsDir, "---------------------------------------------------");
-                        LogWrite.EncryptedLine(writer, CoreSessionLogger.BuildEquippedCharmsLine());
-                        CoreSessionLogger.WriteEncryptedSkillLines(writer, "---------------------------------------------------");
-                        speedWarnTracker.LogInitial(writer, self.TargetSceneName, lastUnixTime);
-                        InitializeDebugModHooks();
-                        godhomeQolTracker.Reset();
-                        godhomeQolTracker.StartFight(self.TargetSceneName, lastUnixTime, includeBossManipulate: false, includeBossChallenge: true);
-                        cachedFrameUnixTime = lastUnixTime;
-
-                    }
-                    catch (Exception e)
-                    {
-                        global::ReplayLogger.InternalDiagnostics.Error("ReplayLogger: failed to start pantheon logging: " + e.Message);
-                        AbortPantheonLogging();
                         lastScene = self.TargetSceneName;
                         orig(self);
                         return;
                     }
-
-                    int seed = (int)(lastUnixTime ^ curentPlayTime);
-
-                    customCanvas = new CustomCanvas(new NumberInCanvas(seed), new LoadingSprite(lastString));
-                    pantheonToastHideAtUnscaledTime = 0f;
 
                     if (IsPantheonFiveEntry(self.TargetSceneName))
                     {
@@ -2285,6 +2422,7 @@ namespace ReplayLogger
             bossCounter = 0;
             startUnixTime = 0;
             isPlayChalange = false;
+            ResetCustomPantheonState();
             ReleaseGameplayHooksIfIdle();
             currentPantheonNumber = 0;
             capturedPantheonNumber = 0;
@@ -2489,9 +2627,15 @@ namespace ReplayLogger
                 writer.Close();
                 writer = null;
 
-                string pantheonName = PathSanitizer.SanitizeSegment(currentPanteon.name, "Unknown");
-                string logFolderName = manualClose ? "Manual Logs" : pantheonName;
-                string logDir = Path.Combine(dllDir, logFolderName);
+                bool customRun = !manualClose && customPantheonRun;
+                string pantheonName = customRun
+                    ? PathSanitizer.SanitizeSegment(customPantheonChainName, GodhomeQolCustomPantheonIntegration.DefaultName)
+                    : PathSanitizer.SanitizeSegment(currentPanteon.name, "Unknown");
+                string logDir = manualClose
+                    ? Path.Combine(dllDir, "Manual Logs")
+                    : customRun
+                        ? Path.Combine(dllDir, CustomPantheonFolder, pantheonName)
+                        : Path.Combine(dllDir, pantheonName);
                 if (!Directory.Exists(logDir))
                 {
                     Directory.CreateDirectory(logDir);
@@ -2604,6 +2748,7 @@ namespace ReplayLogger
                 startUnixTime = 0;
                 isPlayChalange = false;
                 isManualLogging = false;
+                ResetCustomPantheonState();
                 ReleaseGameplayHooksIfIdle();
                 currentPantheonNumber = 0;
                 capturedPantheonNumber = 0;
